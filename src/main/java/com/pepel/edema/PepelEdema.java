@@ -15,6 +15,6 @@ public class PepelEdema
     public PepelEdema(FMLJavaModLoadingContext context)
     {
         MinecraftForge.EVENT_BUS.register(this);
-        LOGGER.info("Пепел Эдема загружен");
+        LOGGER.info("Pepel Edema mod loaded");
     }
 }
