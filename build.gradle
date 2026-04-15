@@ -112,14 +112,7 @@ minecraft {
 sourceSets.main.resources { srcDir 'src/generated/resources' }
 
 repositories {
-    // Put repositories for dependencies here
-    // ForgeGradle automatically adds the Forge maven and Maven Central for you
-
-    // If you have mod jar dependencies in ./libs, you can declare them as a repository like so.
-    // See https://docs.gradle.org/current/userguide/declaring_repositories.html#sub:flat_dir_resolver
-    // flatDir {
-    //     dir 'libs'
-    // }
+    // Нет внешних maven-репозиториев помимо того, что добавляет ForgeGradle.
 }
 
 dependencies {
@@ -205,3 +198,16 @@ publishing {
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8' // Use the UTF-8 charset for Java compilation
 }
+
+// Конвертация ostrov1.schem -> data/pepel/structures/spawn_island.nbt.
+// Запускается автоматически перед processResources. Требует Python 3.8+ с nbtlib.
+tasks.register('convertSchemToNbt', Exec) {
+    def script = file('schem-src/schem_to_nbt.py')
+    def src = file('schem-src/ostrov1.schem')
+    def dst = file('src/main/resources/data/pepel/structures/spawn_island.nbt')
+    inputs.file script
+    inputs.file src
+    outputs.file dst
+    commandLine 'python', script.absolutePath, src.absolutePath, dst.absolutePath
+}
+tasks.named('processResources').configure { dependsOn 'convertSchemToNbt' }

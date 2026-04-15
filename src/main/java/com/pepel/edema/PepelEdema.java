@@ -1,11 +1,18 @@
 package com.pepel.edema;
 
 import com.mojang.logging.LogUtils;
+import com.pepel.edema.config.PepelConfig;
 import com.pepel.edema.item.ModItems;
+import com.pepel.edema.worldgen.ModStructurePieceTypes;
+import com.pepel.edema.worldgen.ModStructureTypes;
+import com.pepel.edema.worldgen.SpawnHandler;
 import net.minecraft.world.item.CreativeModeTabs;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.BuildCreativeModeTabContentsEvent;
+import net.minecraftforge.eventbus.api.IEventBus;
+import net.minecraftforge.fml.ModLoadingContext;
 import net.minecraftforge.fml.common.Mod;
+import net.minecraftforge.fml.config.ModConfig;
 import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
 import org.slf4j.Logger;
 
@@ -17,9 +24,18 @@ public class PepelEdema
 
     public PepelEdema(FMLJavaModLoadingContext context)
     {
-        ModItems.ITEMS.register(context.getModEventBus());
-        context.getModEventBus().addListener(this::onBuildCreativeTab);
+        IEventBus bus = context.getModEventBus();
+
+        ModItems.ITEMS.register(bus);
+        ModStructureTypes.STRUCTURE_TYPES.register(bus);
+        ModStructurePieceTypes.PIECE_TYPES.register(bus);
+
+        bus.addListener(this::onBuildCreativeTab);
+
+        ModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, PepelConfig.SPEC, "pepel-worldgen.toml");
+
         MinecraftForge.EVENT_BUS.register(this);
+        MinecraftForge.EVENT_BUS.addListener(SpawnHandler::onCreateSpawn);
         LOGGER.info("Pepel Edema mod loaded");
     }
 

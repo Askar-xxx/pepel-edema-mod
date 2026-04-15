@@ -1,0 +1,11 @@
+{
+  "type": "pepel:spawn_island",
+  "biomes": "#pepel:spawn_island_ocean",
+  "step": "surface_structures",
+  "spawn_overrides": {},
+  "terrain_adaptation": "none",
+  "template": "pepel:spawn_island",
+  "y_offset": -7,
+  "land_biome_tag": "pepel:spawn_island_land",
+  "ocean_biome_tag": "pepel:spawn_island_ocean"
+}
