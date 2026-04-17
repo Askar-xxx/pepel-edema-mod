@@ -1,3 +1,8 @@
 {
-  "item.pepel.book_of_eren": "Книга Эрена"
+  "item.pepel.book_of_eren": "Книга Эрена",
+
+  "npc.pepel.fisherman.name": "Рыбак",
+  "npc.pepel.fisherman.line1": "Эй, путник. Давно не видел живых на этом берегу.",
+  "npc.pepel.fisherman.line2": "Если ищешь людей — пойди на северо-восток. Там деревня, зовут её Приют.",
+  "npc.pepel.fisherman.line3": "Я бы сам пошёл, да вот... рыба сама себя не поймает."
 }
