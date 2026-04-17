@@ -127,9 +127,6 @@ public class SpawnHandler
                     surface.size(), (int) cx, (int) cz, spawnPos);
         }
 
-        // Прогреть чанк цели, чтобы игрок не оказался в ещё не сгенерированном блоке.
-        level.getChunk(spawnPos.getX() >> 4, spawnPos.getZ() >> 4, ChunkStatus.FULL, true);
-
         level.setDefaultSpawnPos(spawnPos, 0.0F);
         event.setCanceled(true);
         LOGGER.info("Spawn island done in {} ms. World spawn set to {}",

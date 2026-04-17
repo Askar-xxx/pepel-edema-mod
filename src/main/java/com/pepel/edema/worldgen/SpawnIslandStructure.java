@@ -80,23 +80,43 @@ public class SpawnIslandStructure extends Structure
         Holder<Biome> center = source.getNoiseBiome(bx, by, bz, sampler);
         if (!center.is(this.oceanTag)) return false;
 
+        // Абсолютные пороги для early-exit: считаем общее кол-во сэмплов заранее,
+        // чтобы отбраковывать чанк как только гарантирован провал — не дожидаясь всех 16 лучей.
+        int innerLimit = Math.min(p.innerRadius(), p.distMin());
+        int innerPerRay = 0;
+        for (int r = 32; r < innerLimit; r += p.step()) innerPerRay++;
+        int outerPerRay = 0;
+        for (int r = p.distMin(); r <= p.distMax(); r += p.step()) outerPerRay++;
+        int innerTotalMax = innerPerRay * p.numRays();
+        int outerTotalMax = outerPerRay * p.numRays();
+        double innerFailThreshold = p.innerCoverageMax() * innerTotalMax;
+        double outerSuccessThreshold = p.coverageMin() * outerTotalMax;
+
         int innerLand = 0;
         int innerTotal = 0;
         int outerLand = 0;
         int outerTotal = 0;
-        for (int k = 0; k < p.numRays(); k++)
+        // Порядок лучей через bit-reversal (если numRays — степень двойки):
+        // первые 4 итерации покрывают все 4 стороны света (0°, 90°, 180°, 270°),
+        // следующие 4 — диагонали. Early-exit срабатывает намного раньше на плохих кандидатах.
+        int n = p.numRays();
+        int bits = Integer.numberOfTrailingZeros(n);
+        boolean isPow2 = n > 0 && (1 << bits) == n;
+        for (int i = 0; i < n; i++)
         {
-            double theta = 2.0 * Math.PI * k / p.numRays();
+            int k = isPow2 ? (Integer.reverse(i) >>> (32 - bits)) : i;
+            double theta = 2.0 * Math.PI * k / n;
             double cos = Math.cos(theta);
             double sin = Math.sin(theta);
 
-            for (int r = 32; r < Math.min(p.innerRadius(), p.distMin()); r += p.step())
+            for (int r = 32; r < innerLimit; r += p.step())
             {
                 int sx = bx + (int) Math.round(r * cos) / 4;
                 int sz = bz + (int) Math.round(r * sin) / 4;
                 Holder<Biome> b = source.getNoiseBiome(sx, by, sz, sampler);
                 innerTotal++;
                 if (b.is(this.landTag)) innerLand++;
+                if (innerLand > innerFailThreshold) return false;
             }
 
             for (int r = p.distMin(); r <= p.distMax(); r += p.step())
@@ -106,6 +126,7 @@ public class SpawnIslandStructure extends Structure
                 Holder<Biome> b = source.getNoiseBiome(sx, by, sz, sampler);
                 outerTotal++;
                 if (b.is(this.landTag)) outerLand++;
+                if (outerLand + (outerTotalMax - outerTotal) < outerSuccessThreshold) return false;
             }
         }
 
