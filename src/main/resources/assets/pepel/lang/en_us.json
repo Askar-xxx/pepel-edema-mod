@@ -1,3 +1,8 @@
 {
-  "item.pepel.book_of_eren": "Book of Eren"
+  "item.pepel.book_of_eren": "Book of Eren",
+
+  "npc.pepel.fisherman.name": "Fisherman",
+  "npc.pepel.fisherman.line1": "Hey, traveler. Haven't seen anyone alive on this shore for a long time.",
+  "npc.pepel.fisherman.line2": "If you're looking for people — head northeast. There's a village called Refuge.",
+  "npc.pepel.fisherman.line3": "I'd go myself, but... fish don't catch themselves."
 }

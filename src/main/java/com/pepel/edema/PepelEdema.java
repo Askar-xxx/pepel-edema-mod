@@ -20,7 +20,7 @@ import org.slf4j.Logger;
 public class PepelEdema
 {
     public static final String MODID = "pepel";
-    private static final Logger LOGGER = LogUtils.getLogger();
+    public static final Logger LOGGER = LogUtils.getLogger();
 
     public PepelEdema(FMLJavaModLoadingContext context)
     {
