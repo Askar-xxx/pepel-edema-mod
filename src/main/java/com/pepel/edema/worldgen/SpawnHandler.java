@@ -5,35 +5,35 @@ import com.pepel.edema.PepelEdema;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
 import net.minecraft.core.HolderSet;
+import net.minecraft.core.Vec3i;
 import net.minecraft.core.registries.Registries;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.NbtIo;
+import net.minecraft.nbt.Tag;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.packs.resources.Resource;
 import net.minecraft.tags.TagKey;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
-import net.minecraft.world.level.block.Block;
-import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.chunk.ChunkStatus;
-import net.minecraft.world.level.levelgen.structure.BoundingBox;
+import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.levelgen.structure.Structure;
-import net.minecraft.world.level.levelgen.structure.StructureStart;
-import net.minecraft.world.level.levelgen.structure.templatesystem.StructurePlaceSettings;
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplate;
 import net.minecraftforge.event.level.LevelEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.io.InputStream;
 import java.util.Optional;
 
 public class SpawnHandler
 {
     private static final Logger LOGGER = LoggerFactory.getLogger(SpawnHandler.class);
-    private static final TagKey<Structure> SPAWN_ISLAND_TAG = TagKey.create(
-            Registries.STRUCTURE,
-            new ResourceLocation(PepelEdema.MODID, "spawn_island"));
     private static final ResourceLocation TEMPLATE_ID = new ResourceLocation(PepelEdema.MODID, "spawn_island");
+    private static final ResourceLocation TEMPLATE_NBT = new ResourceLocation(PepelEdema.MODID, "structures/spawn_island.nbt");
+    private static final TagKey<Structure> SPAWN_ISLAND_TAG = TagKey.create(Registries.STRUCTURE, TEMPLATE_ID);
     private static final int SEARCH_RADIUS_CHUNKS = 200;
 
     public static void onCreateSpawn(LevelEvent.CreateSpawnPosition event)
@@ -57,79 +57,77 @@ public class SpawnHandler
 
         if (found == null)
         {
-            LOGGER.warn("Spawn island not found within {} chunks of origin after {} ms, falling back to vanilla spawn",
+            LOGGER.warn("Spawn island not found within {} chunks of origin after {} ms",
                     SEARCH_RADIUS_CHUNKS, System.currentTimeMillis() - start);
             return;
         }
 
-        BlockPos foundPos = found.getFirst();
-        Structure structure = found.getSecond().value();
+        // Origin template = (центр чанка - size/2) по X/Z, см. SpawnIslandStructure.findGenerationPoint.
+        ChunkPos cp = new ChunkPos(found.getFirst());
+        StructureTemplate tmpl = level.getServer().getStructureManager().getOrCreate(TEMPLATE_ID);
+        Vec3i size = tmpl.getSize();
+        int originX = cp.getMiddleBlockX() - size.getX() / 2;
+        int originZ = cp.getMiddleBlockZ() - size.getZ() / 2;
 
-        ChunkPos cp = new ChunkPos(foundPos);
-        level.getChunk(cp.x, cp.z, ChunkStatus.STRUCTURE_STARTS, true);
-        StructureStart ss = level.structureManager().getStructureAt(foundPos, structure);
-
-        if (ss == StructureStart.INVALID_START)
+        int[] centroid = readIslandCentroid(level);
+        if (centroid == null)
         {
-            LOGGER.warn("StructureStart invalid for pos={}, using found pos directly", foundPos);
-            level.setDefaultSpawnPos(foundPos.above(30), 0.0F);
-            event.setCanceled(true);
+            LOGGER.warn("Failed to compute island centroid from NBT, falling back to vanilla spawn");
             return;
         }
 
-        BoundingBox bb = ss.getBoundingBox();
-        BlockPos origin = new BlockPos(bb.minX(), bb.minY(), bb.minZ());
-        LOGGER.info("Island bbox: ({}..{}, {}..{}, {}..{}), origin={}",
-                bb.minX(), bb.maxX(), bb.minY(), bb.maxY(), bb.minZ(), bb.maxZ(), origin);
+        int worldX = originX + centroid[0];
+        int worldZ = originZ + centroid[1];
+        level.getChunk(worldX >> 4, worldZ >> 4, ChunkStatus.FULL, true);
+        int worldY = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, worldX, worldZ);
 
-        // Читаем сам .nbt template: там только настоящий остров.
-        // Песчаный столб — часть ланд-шейфта мира/террагена, в template его НЕТ,
-        // так что filterBlocks по grass_block даст координаты только острова.
-        StructureTemplate tmpl = level.getStructureManager().getOrCreate(TEMPLATE_ID);
-        StructurePlaceSettings settings = new StructurePlaceSettings();
-
-        List<StructureTemplate.StructureBlockInfo> surface = new ArrayList<>();
-        for (Block b : new Block[] { Blocks.GRASS_BLOCK, Blocks.PODZOL, Blocks.MYCELIUM, Blocks.MOSS_BLOCK })
-        {
-            surface.addAll(tmpl.filterBlocks(origin, settings, b));
-        }
-
-        BlockPos spawnPos;
-        if (surface.isEmpty())
-        {
-            LOGGER.warn("Template has no grass/podzol/mycelium/moss — fallback to foundPos+30");
-            spawnPos = foundPos.above(30);
-        }
-        else
-        {
-            double cx = 0, cz = 0;
-            for (var info : surface) { cx += info.pos().getX(); cz += info.pos().getZ(); }
-            cx /= surface.size();
-            cz /= surface.size();
-
-            // Ближайший к центроиду блок — но с максимальным Y среди равноудалённых,
-            // чтобы не угодить под крону/нависающую землю.
-            BlockPos best = surface.get(0).pos();
-            double bestDist = Double.MAX_VALUE;
-            for (var info : surface)
-            {
-                BlockPos p = info.pos();
-                double dx = p.getX() - cx, dz = p.getZ() - cz;
-                double d = dx * dx + dz * dz;
-                if (d < bestDist || (d == bestDist && p.getY() > best.getY()))
-                {
-                    bestDist = d;
-                    best = p;
-                }
-            }
-            spawnPos = best.above(1);
-            LOGGER.info("Template grass/podzol: {} blocks, centroid=({},{}), spawn={}",
-                    surface.size(), (int) cx, (int) cz, spawnPos);
-        }
-
+        BlockPos spawnPos = new BlockPos(worldX, worldY, worldZ);
         level.setDefaultSpawnPos(spawnPos, 0.0F);
         event.setCanceled(true);
-        LOGGER.info("Spawn island done in {} ms. World spawn set to {}",
-                System.currentTimeMillis() - start, spawnPos);
+        LOGGER.info("Spawn island done in {} ms. Template={}x{}, island centroid local=({},{}), spawn={}",
+                System.currentTimeMillis() - start, size.getX(), size.getZ(), centroid[0], centroid[1], spawnPos);
+    }
+
+    // Центр массы острова: среднее X/Z по всем присутствующим блокам в NBT.
+    // Air в Structure NBT не хранится, а конвертер стрипает воду/служебный песок —
+    // значит в списке blocks ровно блоки самого острова.
+    private static int[] readIslandCentroid(ServerLevel level)
+    {
+        try
+        {
+            Optional<Resource> resOpt = level.getServer().getResourceManager().getResource(TEMPLATE_NBT);
+            if (resOpt.isEmpty())
+            {
+                LOGGER.error("NBT resource not found: {}", TEMPLATE_NBT);
+                return null;
+            }
+            CompoundTag tag;
+            try (InputStream is = resOpt.get().open())
+            {
+                tag = NbtIo.readCompressed(is);
+            }
+
+            ListTag blocks = tag.getList("blocks", Tag.TAG_COMPOUND);
+            long sumX = 0, sumZ = 0, count = 0;
+            for (int i = 0; i < blocks.size(); i++)
+            {
+                CompoundTag b = blocks.getCompound(i);
+                ListTag pos = b.getList("pos", Tag.TAG_INT);
+                sumX += pos.getInt(0);
+                sumZ += pos.getInt(2);
+                count++;
+            }
+            if (count == 0)
+            {
+                LOGGER.error("NBT has no blocks");
+                return null;
+            }
+            return new int[]{(int) (sumX / count), (int) (sumZ / count)};
+        }
+        catch (Exception e)
+        {
+            LOGGER.error("Failed to parse spawn island NBT", e);
+            return null;
+        }
     }
 }
