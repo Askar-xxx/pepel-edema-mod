@@ -16,6 +16,16 @@ except ImportError:
 
 DATA_VERSION_1_20_1 = 3465
 
+# Ремап блоков при конвертации: исходное имя -> целевой blockstate (свойства в значении разрешены).
+# Свойства исходного блока отбрасываются.
+REMAP = {
+    'minecraft:stone': 'minecraft:sandstone',
+}
+
+# Блоки, вокруг которых кладётся один внешний слой sand
+# (на те 6-соседние позиции, которые в исходнике были air/water/служебным песком).
+OUTER_SAND_AROUND = {'minecraft:stone'}
+
 
 def decode_varint_array(data: bytes, expected: int):
     out = [0] * expected
@@ -66,6 +76,22 @@ def convert(src: Path, dst: Path):
     for k, v in palette_map.items():
         id_to_state[v] = k
 
+    # Запоминаем исходные id блоков, вокруг которых нужен внешний слой sand —
+    # ДО применения REMAP (после REMAP имя в id_to_state поменяется).
+    outer_source_ids = set()
+    for old_id, state_str in enumerate(id_to_state):
+        name, _ = parse_blockstate(state_str)
+        if name in OUTER_SAND_AROUND:
+            outer_source_ids.add(old_id)
+
+    # Применяем REMAP: заменяем state-строку для id-ов исходных блоков.
+    remap_count = {}
+    for old_id, state_str in enumerate(id_to_state):
+        name, _ = parse_blockstate(state_str)
+        if name in REMAP:
+            id_to_state[old_id] = REMAP[name]
+            remap_count[name] = remap_count.get(name, 0) + 1
+
     air_id = palette_map.get('minecraft:air')
 
     # Кольцо воды вокруг острова в .schem было бы поверх натурального океана — убираем.
@@ -91,10 +117,26 @@ def convert(src: Path, dst: Path):
     # Формат Sponge: индекс = x + z*W + y*W*L
     # Формат Structure: хранит blocks как список не-air блоков.
     # Палитру строим из тех state-ов, что реально встретились (кроме air/water при пропуске).
+    # Параллельно собираем bbox не-skip блоков по X/Z — пригодится для ямы в центре острова.
     used_ids = set()
-    for bid in ids:
-        if bid not in skip_ids:
-            used_ids.add(bid)
+    min_x, max_x = W, -1
+    min_z, max_z = L, -1
+    for y in range(H):
+        for z in range(L):
+            base = y * W * L + z * W
+            for x in range(W):
+                bid = ids[base + x]
+                if bid in skip_ids:
+                    continue
+                used_ids.add(bid)
+                if x < min_x:
+                    min_x = x
+                if x > max_x:
+                    max_x = x
+                if z < min_z:
+                    min_z = z
+                if z > max_z:
+                    max_z = z
 
     # Сортируем по исходному id для детерминированности.
     sorted_used = sorted(used_ids)
@@ -108,6 +150,27 @@ def convert(src: Path, dst: Path):
         if props:
             entry['Properties'] = Compound({k: String(v) for k, v in props.items()})
         new_palette.append(entry)
+
+    # Дописываем sand в палитру — им будем покрывать внешний слой вокруг outer_source_ids.
+    sand_palette_index = len(new_palette)
+    new_palette.append(Compound({'Name': String('minecraft:sand')}))
+
+    # Собираем позиции для внешнего слоя sand: соседи исходных outer-блоков,
+    # которые в исходнике были air/water/служебным песком (skip_ids).
+    sand_override = set()
+    if outer_source_ids:
+        neighbors = ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1))
+        for y in range(H):
+            for z in range(L):
+                base = y * W * L + z * W
+                for x in range(W):
+                    if ids[base + x] not in outer_source_ids:
+                        continue
+                    for dx, dy, dz in neighbors:
+                        nx, ny, nz = x + dx, y + dy, z + dz
+                        if 0 <= nx < W and 0 <= ny < H and 0 <= nz < L:
+                            if ids[ny * W * L + nz * W + nx] in skip_ids:
+                                sand_override.add((nx, ny, nz))
 
     # block_entities — Sponge v2 хранит в Pos (IntArray[3]), Id (String), плюс произвольные NBT-поля.
     be_by_pos = {}
@@ -125,11 +188,21 @@ def convert(src: Path, dst: Path):
 
     blocks = []
     skipped_water = 0
+    sand_layer_added = 0
     for y in range(H):
         for z in range(L):
             base = y * W * L + z * W
             for x in range(W):
                 bid = ids[base + x]
+                if (x, y, z) in sand_override:
+                    # Эти позиции в исходнике были skip-блоком (air/water/служебный песок);
+                    # кладём внешний слой sand вместо них.
+                    blocks.append(Compound({
+                        'state': Int(sand_palette_index),
+                        'pos': List[Int]([Int(x), Int(y), Int(z)]),
+                    }))
+                    sand_layer_added += 1
+                    continue
                 if bid in skip_ids:
                     if bid != air_id:
                         skipped_water += 1
@@ -153,8 +226,10 @@ def convert(src: Path, dst: Path):
 
     dst.parent.mkdir(parents=True, exist_ok=True)
     root.save(dst)
+    remap_info = ', '.join(f"{k}->{REMAP[k]}" for k in remap_count) if remap_count else 'none'
     print(f"[schem->nbt] {src.name} -> {dst.name}  (WxHxL = {W}x{H}x{L}, "
           f"palette={len(new_palette)}, blocks={len(blocks)}, water_stripped={skipped_water}, "
+          f"remap=[{remap_info}], outer_sand={sand_layer_added}, "
           f"size={dst.stat().st_size} bytes)")
 
 
