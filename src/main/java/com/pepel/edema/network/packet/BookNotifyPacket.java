@@ -2,6 +2,8 @@ package com.pepel.edema.network.packet;
 
 import com.pepel.edema.capability.Importance;
 import com.pepel.edema.client.ClientBookState;
+import com.pepel.edema.client.toast.BookToast;
+import net.minecraft.client.Minecraft;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.fml.DistExecutor;
@@ -35,9 +37,10 @@ public class BookNotifyPacket
     {
         NetworkEvent.Context ctx = ctxSup.get();
         ctx.enqueueWork(() ->
-                DistExecutor.unsafeRunWhenOn(Dist.CLIENT, () -> () ->
-                        ClientBookState.onNotify(pkt.entryId, pkt.importance)
-                )
+                DistExecutor.unsafeRunWhenOn(Dist.CLIENT, () -> () -> {
+                    ClientBookState.onNotify(pkt.entryId, pkt.importance);
+                    Minecraft.getInstance().getToasts().addToast(new BookToast(pkt.importance));
+                })
         );
         ctx.setPacketHandled(true);
     }

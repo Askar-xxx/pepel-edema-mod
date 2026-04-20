@@ -1,3 +1,5 @@
 {
-  "item.pepel.book_of_eren": "Book of Eren"
+  "item.pepel.book_of_eren": "Book of Eren",
+  "toast.pepel.book.title": "Book of Eren updated...",
+  "toast.pepel.book.subtitle": "A new entry appeared"
 }
