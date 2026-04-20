@@ -26,26 +26,29 @@ public class SpawnIslandStructure extends Structure
             ResourceLocation.CODEC.fieldOf("template").forGetter(s -> s.template),
             Codec.INT.optionalFieldOf("y_offset", 0).forGetter(s -> s.yOffset),
             TagKey.codec(Registries.BIOME).fieldOf("land_biome_tag").forGetter(s -> s.landTag),
-            TagKey.codec(Registries.BIOME).fieldOf("ocean_biome_tag").forGetter(s -> s.oceanTag)
+            TagKey.codec(Registries.BIOME).fieldOf("ocean_biome_tag").forGetter(s -> s.oceanTag),
+            TagKey.codec(Registries.BIOME).fieldOf("forbidden_biome_tag").forGetter(s -> s.forbiddenTag)
     ).apply(i, SpawnIslandStructure::new));
 
     private final ResourceLocation template;
     private final int yOffset;
     private final TagKey<Biome> landTag;
     private final TagKey<Biome> oceanTag;
+    private final TagKey<Biome> forbiddenTag;
 
     public int yOffset() { return yOffset; }
 
     public ResourceLocation template() { return template; }
 
     public SpawnIslandStructure(StructureSettings settings, ResourceLocation template, int yOffset,
-                                TagKey<Biome> landTag, TagKey<Biome> oceanTag)
+                                TagKey<Biome> landTag, TagKey<Biome> oceanTag, TagKey<Biome> forbiddenTag)
     {
         super(settings);
         this.template = template;
         this.yOffset = yOffset;
         this.landTag = landTag;
         this.oceanTag = oceanTag;
+        this.forbiddenTag = forbiddenTag;
     }
 
     @Override
@@ -118,6 +121,7 @@ public class SpawnIslandStructure extends Structure
                 int sx = bx + (int) Math.round(r * cos) / 4;
                 int sz = bz + (int) Math.round(r * sin) / 4;
                 Holder<Biome> b = source.getNoiseBiome(sx, by, sz, sampler);
+                if (b.is(this.forbiddenTag)) return false;
                 innerTotal++;
                 if (b.is(this.landTag)) innerLand++;
                 if (innerLand > innerFailThreshold) return false;
@@ -128,6 +132,7 @@ public class SpawnIslandStructure extends Structure
                 int sx = bx + (int) Math.round(r * cos) / 4;
                 int sz = bz + (int) Math.round(r * sin) / 4;
                 Holder<Biome> b = source.getNoiseBiome(sx, by, sz, sampler);
+                if (b.is(this.forbiddenTag)) return false;
                 outerTotal++;
                 if (b.is(this.landTag)) outerLand++;
                 if (outerLand + (outerTotalMax - outerTotal) < outerSuccessThreshold) return false;
