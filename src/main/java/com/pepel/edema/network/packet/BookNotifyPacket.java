@@ -5,6 +5,7 @@ import com.pepel.edema.client.ClientBookState;
 import com.pepel.edema.client.toast.BookToast;
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.sounds.SoundEvents;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.fml.DistExecutor;
 import net.minecraftforge.network.NetworkEvent;
@@ -40,6 +41,15 @@ public class BookNotifyPacket
                 DistExecutor.unsafeRunWhenOn(Dist.CLIENT, () -> () -> {
                     ClientBookState.onNotify(pkt.entryId, pkt.importance);
                     Minecraft.getInstance().getToasts().addToast(new BookToast(pkt.importance));
+                    if (Minecraft.getInstance().player != null)
+                    {
+                        Minecraft.getInstance().player.playSound(
+                                pkt.importance == Importance.KEY
+                                        ? SoundEvents.PORTAL_TRIGGER
+                                        : SoundEvents.AMETHYST_BLOCK_CHIME,
+                                1.0f, 1.0f
+                        );
+                    }
                 })
         );
         ctx.setPacketHandled(true);
