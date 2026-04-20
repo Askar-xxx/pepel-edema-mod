@@ -34,6 +34,10 @@ public class SpawnIslandStructure extends Structure
     private final TagKey<Biome> landTag;
     private final TagKey<Biome> oceanTag;
 
+    public int yOffset() { return yOffset; }
+
+    public ResourceLocation template() { return template; }
+
     public SpawnIslandStructure(StructureSettings settings, ResourceLocation template, int yOffset,
                                 TagKey<Biome> landTag, TagKey<Biome> oceanTag)
     {

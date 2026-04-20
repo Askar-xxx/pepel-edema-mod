@@ -8,9 +8,7 @@ import net.minecraft.core.HolderSet;
 import net.minecraft.core.Vec3i;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.nbt.CompoundTag;
-import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.NbtIo;
-import net.minecraft.nbt.Tag;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.packs.resources.Resource;
@@ -18,9 +16,7 @@ import net.minecraft.tags.TagKey;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.chunk.ChunkStatus;
-import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.levelgen.structure.Structure;
-import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplate;
 import net.minecraftforge.event.level.LevelEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -62,36 +58,45 @@ public class SpawnHandler
             return;
         }
 
-        // Origin template = (центр чанка - size/2) по X/Z, см. SpawnIslandStructure.findGenerationPoint.
-        ChunkPos cp = new ChunkPos(found.getFirst());
-        StructureTemplate tmpl = level.getServer().getStructureManager().getOrCreate(TEMPLATE_ID);
-        Vec3i size = tmpl.getSize();
-        int originX = cp.getMiddleBlockX() - size.getX() / 2;
-        int originZ = cp.getMiddleBlockZ() - size.getZ() / 2;
-
-        int[] centroid = readIslandCentroid(level);
-        if (centroid == null)
+        Structure structure = found.getSecond().value();
+        if (!(structure instanceof SpawnIslandStructure island))
         {
-            LOGGER.warn("Failed to compute island centroid from NBT, falling back to vanilla spawn");
+            LOGGER.warn("Found structure is not SpawnIslandStructure, got {}", structure.getClass().getName());
             return;
         }
 
-        int worldX = originX + centroid[0];
-        int worldZ = originZ + centroid[1];
+        Vec3i size = level.getServer().getStructureManager().getOrCreate(TEMPLATE_ID).getSize();
+        int[] pit = readPit(level);
+        if (pit == null)
+        {
+            LOGGER.warn("pepel_pit tag missing in {}, falling back to vanilla spawn", TEMPLATE_NBT);
+            return;
+        }
+
+        // placement: origin = (центр чанка - size/2) по X/Z, y = seaLevel - 1 + yOffset,
+        // см. SpawnIslandStructure.findGenerationPoint. Повторяем тот же расчёт.
+        ChunkPos cp = new ChunkPos(found.getFirst());
+        int originX = cp.getMiddleBlockX() - size.getX() / 2;
+        int originZ = cp.getMiddleBlockZ() - size.getZ() / 2;
+        int baseY = level.getSeaLevel() - 1 + island.yOffset();
+
+        int worldX = originX + pit[0];
+        int worldY = baseY + pit[1];
+        int worldZ = originZ + pit[2];
+
+        // Прогрев чанка точки спавна: setDefaultSpawnPos триггерит loadPlayerSpawn.
         level.getChunk(worldX >> 4, worldZ >> 4, ChunkStatus.FULL, true);
-        int worldY = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, worldX, worldZ);
 
         BlockPos spawnPos = new BlockPos(worldX, worldY, worldZ);
         level.setDefaultSpawnPos(spawnPos, 0.0F);
         event.setCanceled(true);
-        LOGGER.info("Spawn island done in {} ms. Template={}x{}, island centroid local=({},{}), spawn={}",
-                System.currentTimeMillis() - start, size.getX(), size.getZ(), centroid[0], centroid[1], spawnPos);
+        LOGGER.info("Spawn island done in {} ms. Pit local=({},{},{}), spawn={}",
+                System.currentTimeMillis() - start, pit[0], pit[1], pit[2], spawnPos);
     }
 
-    // Центр массы острова: среднее X/Z по всем присутствующим блокам в NBT.
-    // Air в Structure NBT не хранится, а конвертер стрипает воду/служебный песок —
-    // значит в списке blocks ровно блоки самого острова.
-    private static int[] readIslandCentroid(ServerLevel level)
+    // Читаем кастомный тег pepel_pit, записанный schem_to_nbt.py. Структура tag:
+    //   pepel_pit: { x: Int, y: Int, z: Int }  — локальные координаты template.
+    private static int[] readPit(ServerLevel level)
     {
         try
         {
@@ -106,27 +111,13 @@ public class SpawnHandler
             {
                 tag = NbtIo.readCompressed(is);
             }
-
-            ListTag blocks = tag.getList("blocks", Tag.TAG_COMPOUND);
-            long sumX = 0, sumZ = 0, count = 0;
-            for (int i = 0; i < blocks.size(); i++)
-            {
-                CompoundTag b = blocks.getCompound(i);
-                ListTag pos = b.getList("pos", Tag.TAG_INT);
-                sumX += pos.getInt(0);
-                sumZ += pos.getInt(2);
-                count++;
-            }
-            if (count == 0)
-            {
-                LOGGER.error("NBT has no blocks");
-                return null;
-            }
-            return new int[]{(int) (sumX / count), (int) (sumZ / count)};
+            if (!tag.contains("pepel_pit", 10)) return null;
+            CompoundTag pit = tag.getCompound("pepel_pit");
+            return new int[]{pit.getInt("x"), pit.getInt("y"), pit.getInt("z")};
         }
         catch (Exception e)
         {
-            LOGGER.error("Failed to parse spawn island NBT", e);
+            LOGGER.error("Failed to read pepel_pit from spawn island NBT", e);
             return null;
         }
     }

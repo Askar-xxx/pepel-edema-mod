@@ -138,6 +138,42 @@ def convert(src: Path, dst: Path):
                 if z > max_z:
                     max_z = z
 
+    # Heightmap по (x, z): максимальная y не-skip блока. Нужен для автодетекта ямы —
+    # колонки, чей топ заметно ниже соседей. Строим параллельно со сбором used_ids.
+    hm = [[-1] * L for _ in range(W)]
+    for y in range(H):
+        for z in range(L):
+            base = y * W * L + z * W
+            for x in range(W):
+                if ids[base + x] in skip_ids:
+                    continue
+                if y > hm[x][z]:
+                    hm[x][z] = y
+
+    # Находим самую глубокую яму внутри bbox: argmax(avg_neighbors_top - top).
+    # Требуем минимум 6 соседей с данными — иначе это кромка острова, не яма.
+    best_pit = None
+    best_depth = 0.0
+    for x in range(min_x, max_x + 1):
+        for z in range(min_z, max_z + 1):
+            y = hm[x][z]
+            if y < 0:
+                continue
+            neigh = []
+            for dx in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    if dx == 0 and dz == 0:
+                        continue
+                    nx, nz = x + dx, z + dz
+                    if 0 <= nx < W and 0 <= nz < L and hm[nx][nz] >= 0:
+                        neigh.append(hm[nx][nz])
+            if len(neigh) >= 6:
+                avg = sum(neigh) / len(neigh)
+                depth = avg - y
+                if depth > best_depth:
+                    best_depth = depth
+                    best_pit = (x, y + 1, z)  # y+1 — позиция над дном (куда встанут ноги)
+
     # Сортируем по исходному id для детерминированности.
     sorted_used = sorted(used_ids)
     old_to_new = {old: new for new, old in enumerate(sorted_used)}
@@ -216,20 +252,28 @@ def convert(src: Path, dst: Path):
                     entry['nbt'] = be
                 blocks.append(entry)
 
-    root = nbtlib.File({
+    root_data = {
         'DataVersion': Int(DATA_VERSION_1_20_1),
         'size': List[Int]([Int(W), Int(H), Int(L)]),
         'palette': List[Compound](new_palette),
         'blocks': List[Compound](blocks),
         'entities': List[Compound]([]),
-    }, gzipped=True)
+    }
+    if best_pit is not None:
+        root_data['pepel_pit'] = Compound({
+            'x': Int(best_pit[0]),
+            'y': Int(best_pit[1]),
+            'z': Int(best_pit[2]),
+        })
+    root = nbtlib.File(root_data, gzipped=True)
 
     dst.parent.mkdir(parents=True, exist_ok=True)
     root.save(dst)
     remap_info = ', '.join(f"{k}->{REMAP[k]}" for k in remap_count) if remap_count else 'none'
+    pit_info = f"pit=({best_pit[0]},{best_pit[1]},{best_pit[2]}) depth={best_depth:.1f}" if best_pit else "pit=none"
     print(f"[schem->nbt] {src.name} -> {dst.name}  (WxHxL = {W}x{H}x{L}, "
           f"palette={len(new_palette)}, blocks={len(blocks)}, water_stripped={skipped_water}, "
-          f"remap=[{remap_info}], outer_sand={sand_layer_added}, "
+          f"remap=[{remap_info}], outer_sand={sand_layer_added}, {pit_info}, "
           f"size={dst.stat().st_size} bytes)")
 
 
