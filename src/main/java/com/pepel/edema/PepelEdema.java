@@ -1,8 +1,10 @@
 package com.pepel.edema;
 
 import com.mojang.logging.LogUtils;
+import com.pepel.edema.capability.BookNotificationsProvider;
 import com.pepel.edema.config.PepelConfig;
 import com.pepel.edema.item.ModItems;
+import com.pepel.edema.network.PepelNetwork;
 import com.pepel.edema.worldgen.ModStructurePieceTypes;
 import com.pepel.edema.worldgen.ModStructureTypes;
 import com.pepel.edema.worldgen.SpawnHandler;
@@ -31,6 +33,9 @@ public class PepelEdema
         ModStructurePieceTypes.PIECE_TYPES.register(bus);
 
         bus.addListener(this::onBuildCreativeTab);
+        bus.addListener(BookNotificationsProvider::register);
+
+        PepelNetwork.register();
 
         ModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, PepelConfig.SPEC, "pepel-worldgen.toml");
 
