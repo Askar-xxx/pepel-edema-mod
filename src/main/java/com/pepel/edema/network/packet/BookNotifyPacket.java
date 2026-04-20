@@ -45,8 +45,8 @@ public class BookNotifyPacket
                     {
                         Minecraft.getInstance().player.playSound(
                                 pkt.importance == Importance.KEY
-                                        ? SoundEvents.PORTAL_TRIGGER
-                                        : SoundEvents.AMETHYST_BLOCK_CHIME,
+                                        ? SoundEvents.END_PORTAL_FRAME_FILL
+                                        : SoundEvents.BOOK_PAGE_TURN,
                                 1.0f, 1.0f
                         );
                     }
