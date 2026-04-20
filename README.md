@@ -103,7 +103,7 @@ instances/PepelEdema/config/pepel-worldgen.toml
 
 Триггерит уведомление в Книге Эрена у указанных игроков. Permission level 2 (OP / командный блок / FTB Quests reward).
 
-- **Эффекты:** мерцание книги в инвентаре + vanilla Toast «Книга Эрена обновилась...» + звук (`amethyst_block.chime` для `normal`, `portal.trigger` для `key`)
+- **Эффекты:** мерцание книги в инвентаре + vanilla Toast «Книга Эрена обновилась...» + звук (`item.book.page_turn` для `normal`, `block.end_portal_frame.fill` для `key`)
 - **Гасится** автоматически при открытии книги
 - `entryId` — произвольная строка-идентификатор записи (нужна для дедупа: повторное `notify` с тем же `entryId` не дублирует уведомление)
 
