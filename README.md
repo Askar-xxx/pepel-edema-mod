@@ -97,6 +97,35 @@ instances/PepelEdema/config/pepel-worldgen.toml
 
 Отрицательные значения = ниже относительно `seaLevel - 1`.
 
+## Команды
+
+### `/pepel book notify <players> <entryId> <normal|key>`
+
+Триггерит уведомление в Книге Эрена у указанных игроков. Permission level 2 (OP / командный блок / FTB Quests reward).
+
+- **Эффекты:** мерцание книги в инвентаре + vanilla Toast «Книга Эрена обновилась...» + звук (`amethyst_block.chime` для `normal`, `portal.trigger` для `key`)
+- **Гасится** автоматически при открытии книги
+- `entryId` — произвольная строка-идентификатор записи (нужна для дедупа: повторное `notify` с тем же `entryId` не дублирует уведомление)
+
+**Примеры:**
+```
+/pepel book notify Bri awakening key
+/pepel book notify @s test normal
+/pepel book notify @a shard_unlocked normal
+```
+
+**Из KubeJS:**
+```js
+event.player.runCommandSilent(
+    `pepel book notify ${event.player.username} awakening normal`
+)
+```
+
+**Из FTB Quests reward "command":**
+```
+pepel book notify @s shard_unlocked key
+```
+
 ## Логи
 
 `instances/PepelEdema/logs/latest.log`. Искать строки:
@@ -126,7 +155,6 @@ fix(mod): <что починил>
 
 ## Что ещё планируется (бэклог)
 
-- C3: уведомления при сборе осколка (мерцание книги, HUD, звук)
 - C4: Mixin-патчи для дропа осколков и условий порталов
 - C6: крафтовая станция осколков (кастомный блок + UI)
 - Команда `/pepel_ringdebug` — отладка ring-check прямо в игре
