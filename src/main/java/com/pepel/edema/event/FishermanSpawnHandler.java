@@ -4,6 +4,7 @@ import com.pepel.edema.PepelEdema;
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.StringTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.game.ClientboundSetSubtitleTextPacket;
 import net.minecraft.network.protocol.game.ClientboundSetTitleTextPacket;
@@ -28,8 +29,9 @@ import net.minecraftforge.registries.ForgeRegistries;
 @Mod.EventBusSubscriber(modid = PepelEdema.MODID)
 public class FishermanSpawnHandler
 {
-    private static final String FLAG           = "pepel_fisherman_spawned";
-    private static final int    ISLAND_RADIUS  = 100; // блоков от мирового спавна
+    /** Тег у entity рыбака. Страховка против race-condition / повреждённого SavedData. */
+    public static final  String ENTITY_TAG    = "pepel_fisherman";
+    private static final int    ISLAND_RADIUS = 100; // блоков от мирового спавна
     private static final int    CHECK_INTERVAL = 100; // тиков (~5 сек)
 
     private static final ResourceLocation CUSTOM_NPC_ID =
@@ -46,20 +48,32 @@ public class FishermanSpawnHandler
         if (event.player.tickCount % CHECK_INTERVAL != 0) return;
 
         Player player = event.player;
-        CompoundTag data = player.getPersistentData();
-        if (data.getBoolean(FLAG)) return;
-
         ServerLevel level = (ServerLevel) player.level();
-        BlockPos spawn = level.getSharedSpawnPos();
 
+        // Главный гейт: один рыбак на мир, флаг в overworld DataStorage.
+        FishermanSpawnState state = FishermanSpawnState.get(level);
+        if (state.isSpawned()) return;
+
+        BlockPos spawn = level.getSharedSpawnPos();
         double dist = Math.sqrt(player.blockPosition().distSqr(spawn));
         if (dist < ISLAND_RADIUS) return;
 
         BlockPos fishermanPos = findShoreNear(level, player.blockPosition());
         if (fishermanPos == null) return;
 
+        // Страховка: если в мире уже есть entity с нашим тегом — синхронизируем флаг и выходим.
+        // Защищает от ситуации "SavedData затёрся, а NPC физически в мире остался".
+        for (Entity e : level.getServer().overworld().getEntities().getAll())
+        {
+            if (e.getTags().contains(ENTITY_TAG))
+            {
+                state.markSpawned();
+                return;
+            }
+        }
+
         spawnFisherman(level, fishermanPos, (ServerPlayer) player);
-        data.putBoolean(FLAG, true);
+        state.markSpawned();
     }
 
     /** Ищет твёрдую землю (не воду) в радиусе 10-80 блоков от игрока */
@@ -116,6 +130,7 @@ public class FishermanSpawnHandler
         villager.setCustomName(Component.literal("Рыбак"));
         villager.setCustomNameVisible(true);
         villager.setPersistenceRequired();
+        villager.addTag(ENTITY_TAG);
         level.addFreshEntity(villager);
         playSpawnEffect(level, pos, player);
         PepelEdema.LOGGER.info("Рыбак (villager fallback) заспавнился на {}", pos);
@@ -162,6 +177,11 @@ public class FishermanSpawnHandler
         tag.putBoolean("Invulnerable", true);
         tag.putBoolean("PersistenceRequired", true);
         tag.putBoolean("Silent", true);
+
+        // Маркерный тег: страховка против повторного спавна, если SavedData затрётся.
+        ListTag tags = new ListTag();
+        tags.add(StringTag.valueOf(ENTITY_TAG));
+        tag.put("Tags", tags);
 
         // Custom NPCs: ключи из эталонного /data get entity дампа
         tag.putString("Name", "Рыбак");
