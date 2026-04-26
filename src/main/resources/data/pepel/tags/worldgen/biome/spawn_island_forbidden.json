@@ -12,23 +12,7 @@
     "minecraft:savanna_plateau",
     "minecraft:windswept_savanna",
     "minecraft:snowy_plains",
-    "minecraft:snowy_beach",
-    "minecraft:snowy_slopes",
     "minecraft:snowy_taiga",
-    "minecraft:ice_spikes",
-    "minecraft:frozen_peaks",
-    "minecraft:jagged_peaks",
-    "minecraft:grove",
-    "minecraft:plains",
-    "minecraft:sunflower_plains",
-    "minecraft:meadow",
-    "minecraft:taiga",
-    "minecraft:old_growth_pine_taiga",
-    "minecraft:old_growth_spruce_taiga",
-    "minecraft:frozen_ocean",
-    "minecraft:deep_frozen_ocean",
-    "minecraft:cold_ocean",
-    "minecraft:deep_cold_ocean",
-    "minecraft:frozen_river"
+    "minecraft:ice_spikes"
   ]
 }
