@@ -29,7 +29,20 @@ public class SpawnHandler
     private static final ResourceLocation TEMPLATE_ID = new ResourceLocation(PepelEdema.MODID, "spawn_island");
     private static final ResourceLocation TEMPLATE_NBT = new ResourceLocation(PepelEdema.MODID, "structures/spawn_island.nbt");
     private static final TagKey<Structure> SPAWN_ISLAND_TAG = TagKey.create(Registries.STRUCTURE, TEMPLATE_ID);
-    private static final int SEARCH_RADIUS_CHUNKS = 200;
+
+    /**
+     * Внимание: для RandomSpreadStructurePlacement Mojang интерпретирует этот параметр НЕ в чанках,
+     * а в spacing-units. При spacing=64 значение 16 = поиск в радиусе 16×64 = 1024 чанка ≈ 16 384 блока
+     * от мирового спавна, что даёт (2*16+1)² = 1089 кандидатов к проверке. Ожидаемое время ~1 сек.
+     *
+     * Радиус 4 (256 чанков ≈ 4096 блоков) пробовался — поиск отрабатывал за 200 мс, но не находил
+     * ни одного подходящего слота: 81 кандидата мало для случайного попадания в "открытый океан с
+     * островом". Радиус 16 даёт хороший запас, оставаясь мгновенным по человеческим меркам.
+     *
+     * Старое значение 200 раздуло перебор до 401² = 160 801 кандидатов на радиусе ~205 км —
+     * findNearestMapStructure висел >2 минут и тоже не находил ничего.
+     */
+    private static final int SEARCH_RADIUS_SPACING_UNITS = 16;
 
     public static void onCreateSpawn(LevelEvent.CreateSpawnPosition event)
     {
@@ -48,12 +61,12 @@ public class SpawnHandler
 
         long start = System.currentTimeMillis();
         Pair<BlockPos, Holder<Structure>> found = level.getChunkSource().getGenerator()
-                .findNearestMapStructure(level, tagSet.get(), BlockPos.ZERO, SEARCH_RADIUS_CHUNKS, false);
+                .findNearestMapStructure(level, tagSet.get(), BlockPos.ZERO, SEARCH_RADIUS_SPACING_UNITS, false);
 
         if (found == null)
         {
-            LOGGER.warn("Spawn island not found within {} chunks of origin after {} ms",
-                    SEARCH_RADIUS_CHUNKS, System.currentTimeMillis() - start);
+            LOGGER.warn("Spawn island not found within {} spacing-units of origin after {} ms",
+                    SEARCH_RADIUS_SPACING_UNITS, System.currentTimeMillis() - start);
             return;
         }
 
