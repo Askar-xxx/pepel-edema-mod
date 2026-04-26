@@ -15,7 +15,6 @@ import net.minecraft.server.packs.resources.Resource;
 import net.minecraft.tags.TagKey;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
-import net.minecraft.world.level.chunk.ChunkStatus;
 import net.minecraft.world.level.levelgen.structure.Structure;
 import net.minecraftforge.event.level.LevelEvent;
 import org.slf4j.Logger;
@@ -84,9 +83,11 @@ public class SpawnHandler
         int worldY = baseY + pit[1];
         int worldZ = originZ + pit[2];
 
-        // Прогрев чанка точки спавна: setDefaultSpawnPos триггерит loadPlayerSpawn.
-        level.getChunk(worldX >> 4, worldZ >> 4, ChunkStatus.FULL, true);
-
+        // Координаты ямы взяты из pepel_pit-тега NBT (см. readPit), без обращения к мировым
+        // блокам — синхронный прогрев чанка не нужен. setDefaultSpawnPos сам триггерит
+        // loadPlayerSpawn (генерит спавн-квадрат 11x11 чанков). Раньше тут стоял
+        // level.getChunk(..., ChunkStatus.FULL, true) — он дублировал работу loadPlayerSpawn
+        // и тормозил создание мира на секунды.
         BlockPos spawnPos = new BlockPos(worldX, worldY, worldZ);
         level.setDefaultSpawnPos(spawnPos, 0.0F);
         event.setCanceled(true);
