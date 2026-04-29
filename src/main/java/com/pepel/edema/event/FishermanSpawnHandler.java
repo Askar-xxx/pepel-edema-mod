@@ -64,8 +64,9 @@ public class FishermanSpawnHandler
     private static final Map<UUID, Vec3> LAST_POS = new HashMap<>();
 
     /** Конус поиска по курсу: радиусы и углы относительно направления движения. */
-    private static final int[]  SEARCH_RADII   = {25, 35, 45, 55, 70, 90, 110};
-    private static final int[]  SEARCH_ANGLES  = {0, -15, 15, -30, 30, -45, 45, -60, 60, -75, 75};
+    private static final int[]  SEARCH_RADII   = {25, 30, 35, 40, 45, 50, 55, 60};
+    private static final int[]  SEARCH_ANGLES  = {0, -15, 15, -30, 30, -45, 45};
+    private static final int    LOCAL_SEARCH_RADIUS = 6;
 
     /** Минимальное расстояние от воды до точки спавна (защита от обрывов и узких кос). */
     private static final int    SHORE_BUFFER   = 10;
@@ -169,16 +170,13 @@ public class FishermanSpawnHandler
                 int dx = (int) Math.round(rotX * r);
                 int dz = (int) Math.round(rotZ * r);
 
-                BlockPos surface = level.getHeightmapPos(
+                BlockPos projected = level.getHeightmapPos(
                         Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
                         new BlockPos(playerPos.getX() + dx, 0, playerPos.getZ() + dz)
                 );
 
-                if (!isLandPoint(level, surface)) continue;
-                if (insideIslandZone(surface, islandSpawn)) continue;
-                if (!hasLandBuffer(level, surface)) continue;
-                if (!hasFlatCampFootprint(level, surface)) continue;
-                if (!hasClearCampArea(level, surface)) continue;
+                BlockPos surface = findNearbyCampSpot(level, projected, islandSpawn);
+                if (surface == null) continue;
 
                 if (isPreferredCampGround(level, surface))
                 {
@@ -191,6 +189,63 @@ public class FishermanSpawnHandler
             }
         }
         return fallback;
+    }
+
+    private static BlockPos findNearbyCampSpot(ServerLevel level, BlockPos projected, BlockPos islandSpawn)
+    {
+        BlockPos bestFallback = null;
+        int bestFallbackDistSq = Integer.MAX_VALUE;
+
+        for (int radius = 0; radius <= LOCAL_SEARCH_RADIUS; radius++)
+        {
+            BlockPos preferred = null;
+            int bestPreferredDistSq = Integer.MAX_VALUE;
+
+            for (int dx = -radius; dx <= radius; dx++)
+            {
+                for (int dz = -radius; dz <= radius; dz++)
+                {
+                    if (Math.max(Math.abs(dx), Math.abs(dz)) != radius) continue;
+
+                    BlockPos surface = level.getHeightmapPos(
+                            Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
+                            new BlockPos(projected.getX() + dx, 0, projected.getZ() + dz)
+                    );
+                    if (!isValidCampSpot(level, surface, islandSpawn)) continue;
+
+                    int distSq = dx * dx + dz * dz;
+                    if (isPreferredCampGround(level, surface))
+                    {
+                        if (distSq < bestPreferredDistSq)
+                        {
+                            preferred = surface;
+                            bestPreferredDistSq = distSq;
+                        }
+                    }
+                    else if (distSq < bestFallbackDistSq)
+                    {
+                        bestFallback = surface;
+                        bestFallbackDistSq = distSq;
+                    }
+                }
+            }
+
+            if (preferred != null)
+            {
+                return preferred;
+            }
+        }
+
+        return bestFallback;
+    }
+
+    private static boolean isValidCampSpot(ServerLevel level, BlockPos surface, BlockPos islandSpawn)
+    {
+        return isLandPoint(level, surface)
+                && !insideIslandZone(surface, islandSpawn)
+                && hasLandBuffer(level, surface)
+                && hasFlatCampFootprint(level, surface)
+                && hasClearCampArea(level, surface);
     }
 
     private static boolean isLandPoint(ServerLevel level, BlockPos surface)
