@@ -1,8 +1,7 @@
 {
-    "DialogId": 5,
+    "DialogId": 34,
     "DialogTitle": "Кто ты?",
-    "DialogText": "Рыбак я. Просто рыбак. Имени своего уже и не помню — давно не звали по нему.
-Осел тут ещё до того, как всё пошло прахом. Ловлю рыбу, жгу костёр, смотрю на воду.",
+    "DialogText": "Я держу Приют на ногах, пока остальные спорят, молятся или чинят то, что опять развалилось. Если кто-то здесь выжил, значит, кто-то вовремя сказал ему, где взять доски и когда бежать.",
     "DialogShowWheel": 0b,
     "DialogHideNPC": 0b,
     "DialogDisableEsc": 0b,
@@ -10,8 +9,7 @@
     "DialogQuest": -1,
     "ModRev": 18,
     "Options": [
-        {"OptionSlot": 0, "Option": {"DialogCommand": "", "Dialog": 9, "Title": "О деревне", "DialogColor": 14737632, "OptionType": 1}},
-        {"OptionSlot": 1, "Option": {"DialogCommand": "", "Dialog": 7, "Title": "Пока", "DialogColor": 14737632, "OptionType": 1}}
+        {"OptionSlot": 0, "Option": {"DialogCommand": "", "Dialog": 33, "Title": "Пока", "DialogColor": 14737632, "OptionType": 1}}
     ],
     "AvailabilityQuestId": -1, "AvailabilityDialog": 0, "AvailabilityDialogId": -1,
     "AvailabilityDialog2": 0, "AvailabilityDialog2Id": -1,
