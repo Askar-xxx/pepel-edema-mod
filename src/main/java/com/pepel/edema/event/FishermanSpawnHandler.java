@@ -146,6 +146,10 @@ public class FishermanSpawnHandler
 
         spawnCamp(level, campfirePos, (ServerPlayer) player);
         state.markSpawned();
+
+        // PoC деревни Приют: ставим её "за рыбаком" по вектору от острова.
+        // Pivot = campfirePos + dir * 300 блоков (см. DISTANCE_FROM_FISHERMAN в VillagePlacement).
+        com.pepel.edema.worldgen.VillagePlacement.tryPlaceVillage(level, islandSpawn, campfirePos);
     }
 
     /**

@@ -1,0 +1,10 @@
+{
+  "_comment": "Манифест деревни Приют. Pivot=well. Offset'ы раздвинуты так чтобы (bbox + EDGE_FEATHER=4) одного здания не пересекался с другим. Порядок в коде: большие→мелкие, чтобы мелкие well/q_board не затирались feather'ами соседей.",
+  "buildings": [
+    { "id": "well",        "ox":   0, "oz":   0 },
+    { "id": "q_board",     "ox":  -3, "oz":  14 },
+    { "id": "ivar_house1", "ox":   0, "oz": -22 },
+    { "id": "herb_house",  "ox": -25, "oz":  15 },
+    { "id": "farm",        "ox":  25, "oz":  18 }
+  ]
+}
