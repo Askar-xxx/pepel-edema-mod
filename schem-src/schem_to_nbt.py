@@ -9,7 +9,7 @@ from pathlib import Path
 
 try:
     import nbtlib
-    from nbtlib.tag import Compound, Int, IntArray, List, String
+    from nbtlib.tag import Compound, Double, Int, IntArray, List, String
 except ImportError:
     sys.stderr.write("ERROR: nbtlib не установлен. Установи: pip install nbtlib\n")
     sys.exit(2)
@@ -264,12 +264,58 @@ def convert(src: Path, dst: Path, village_mode: bool = False):
                     entry['nbt'] = be
                 blocks.append(entry)
 
+    # Entities: Sponge v2 хранит в Entities (если в WorldEdit копировали с -e).
+    # ВАЖНО: Sponge v2 хранит entity.Pos в АБСОЛЮТНЫХ мировых координатах на момент копии,
+    # не относительно origin'а схемы. Чтобы получить relative-to-origin (что нужно для
+    # Minecraft Structure NBT) — вычитаем schem.Offset (мировая координата блока (0,0,0)).
+    # Поля entity: Id (String, mc id), Pos (List<Double>×3, абсолютные), плюс произвольные
+    # NBT-поля сущности (Health, Age, CustomName и т.д.).
+    # Minecraft Structure NBT хранит entities как: blockPos (Int×3, relative) +
+    # pos (Double×3, relative) + nbt (Compound с id + остальное). placeInWorld() сам
+    # переписывает Pos через transform(entity.pos)+templatePos → world.
+    # UUID отбрасываем — иначе при множественной постановке schem'ы будут конфликты UUID.
+    schem_offset = schem.get('Offset')
+    ox = int(schem_offset[0]) if schem_offset is not None else 0
+    oy = int(schem_offset[1]) if schem_offset is not None else 0
+    oz = int(schem_offset[2]) if schem_offset is not None else 0
+    out_entities = []
+    entities_skipped = 0
+    for ent in schem.get('Entities', []) or []:
+        if 'Pos' not in ent or 'Id' not in ent:
+            entities_skipped += 1
+            continue
+        pos = ent['Pos']
+        if len(pos) < 3:
+            entities_skipped += 1
+            continue
+        # absolute → relative
+        px = float(pos[0]) - ox
+        py = float(pos[1]) - oy
+        pz = float(pos[2]) - oz
+        eid = str(ent['Id'])
+        nbt_data = Compound()
+        for k, v in ent.items():
+            # Pos оригинальный (абсолютный) выкидываем: его перезапишет Minecraft
+            # при placeInWorld через transform(entity.pos)+templatePos.
+            if k in ('Id', 'Pos', 'UUID', 'UUIDLeast', 'UUIDMost'):
+                continue
+            nbt_data[k] = v
+        nbt_data['id'] = String(eid)
+        # Pos в nbt тоже relative — на случай если EntityType.loadEntityRecursive
+        # прочитает его до того как Minecraft перепишет.
+        nbt_data['Pos'] = List[Double]([Double(px), Double(py), Double(pz)])
+        out_entities.append(Compound({
+            'blockPos': List[Int]([Int(int(px)), Int(int(py)), Int(int(pz))]),
+            'pos':      List[Double]([Double(px), Double(py), Double(pz)]),
+            'nbt':      nbt_data,
+        }))
+
     root_data = {
         'DataVersion': Int(DATA_VERSION_1_20_1),
         'size': List[Int]([Int(W), Int(H), Int(L)]),
         'palette': List[Compound](new_palette),
         'blocks': List[Compound](blocks),
-        'entities': List[Compound]([]),
+        'entities': List[Compound](out_entities),
     }
     if best_pit is not None:
         root_data['pepel_pit'] = Compound({
@@ -283,9 +329,10 @@ def convert(src: Path, dst: Path, village_mode: bool = False):
     root.save(dst)
     remap_info = ', '.join(f"{k}->{REMAP[k]}" for k in remap_count) if remap_count else 'none'
     pit_info = f"pit=({best_pit[0]},{best_pit[1]},{best_pit[2]}) depth={best_depth:.1f}" if best_pit else "pit=none"
+    ent_info = f"entities={len(out_entities)}" + (f" (skipped={entities_skipped})" if entities_skipped else "")
     print(f"[schem->nbt] {src.name} -> {dst.name}  (WxHxL = {W}x{H}x{L}, "
           f"palette={len(new_palette)}, blocks={len(blocks)}, water_stripped={skipped_water}, "
-          f"remap=[{remap_info}], outer_sand={sand_layer_added}, {pit_info}, "
+          f"remap=[{remap_info}], outer_sand={sand_layer_added}, {pit_info}, {ent_info}, "
           f"size={dst.stat().st_size} bytes)")
 
 
