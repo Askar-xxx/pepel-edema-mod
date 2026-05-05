@@ -24,46 +24,96 @@ public class StoryNpcSpawner
 
     public static void spawnIvarNear(ServerPlayer player)
     {
-        spawn(player, storyNpc(
-                "Ивар",
-                "pepel:textures/entity/npc/ivar.png",
-                "pepel_ivar",
-                new DialogOption(0, FishermanDialogs.IVAR_START_ID, "Разговор"),
-                new DialogOption(1, FishermanDialogs.IVAR_RUINS_ID, "О руинах"),
-                new DialogOption(2, FishermanDialogs.IVAR_WHO_ID, "Кто ты?")
-        ));
+        spawnNearPlayer(player, ivar());
     }
 
     public static void spawnLiaNear(ServerPlayer player)
     {
-        spawn(player, storyNpc(
-                "Лия",
-                "pepel:textures/entity/npc/lia.png",
-                "pepel_lia",
-                new DialogOption(0, FishermanDialogs.LIA_START_ID, "Разговор"),
-                new DialogOption(1, FishermanDialogs.LIA_ROOTS_ID, "О корнях"),
-                new DialogOption(2, FishermanDialogs.LIA_WHO_ID, "Кто ты?")
-        ));
+        spawnNearPlayer(player, lia());
     }
 
     public static void spawnMartaNear(ServerPlayer player)
     {
-        spawn(player, storyNpc(
+        spawnNearPlayer(player, marta());
+    }
+
+    /**
+     * Авто-спавн story NPC в указанной точке (для генерации деревни).
+     * npcId: "ivar" | "lia" | "marta". Возвращает true если customnpcs entity создан,
+     * false если упали в villager fallback или вообще ничего не создалось.
+     */
+    public static boolean spawnAt(ServerLevel level, BlockPos pos, float yaw, String npcId)
+    {
+        StoryNpc npc = byId(npcId);
+        if (npc == null)
+        {
+            PepelEdema.LOGGER.error("[story-npc] неизвестный npcId: {}", npcId);
+            return false;
+        }
+        return spawnInternal(level, pos, yaw, npc, null);
+    }
+
+    private static StoryNpc byId(String id)
+    {
+        if (id == null) return null;
+        switch (id)
+        {
+            case "ivar":  return ivar();
+            case "lia":   return lia();
+            case "marta": return marta();
+            default:      return null;
+        }
+    }
+
+    private static StoryNpc ivar()
+    {
+        return new StoryNpc(
+                "Ивар",
+                "pepel:textures/entity/npc/ivar.png",
+                "pepel_ivar",
+                new DialogOption[]{
+                        new DialogOption(0, FishermanDialogs.IVAR_START_ID, "Разговор"),
+                        new DialogOption(1, FishermanDialogs.IVAR_RUINS_ID, "О руинах"),
+                        new DialogOption(2, FishermanDialogs.IVAR_WHO_ID, "Кто ты?")
+                });
+    }
+
+    private static StoryNpc lia()
+    {
+        return new StoryNpc(
+                "Лия",
+                "pepel:textures/entity/npc/lia.png",
+                "pepel_lia",
+                new DialogOption[]{
+                        new DialogOption(0, FishermanDialogs.LIA_START_ID, "Разговор"),
+                        new DialogOption(1, FishermanDialogs.LIA_ROOTS_ID, "О корнях"),
+                        new DialogOption(2, FishermanDialogs.LIA_WHO_ID, "Кто ты?")
+                });
+    }
+
+    private static StoryNpc marta()
+    {
+        return new StoryNpc(
                 "Марта",
                 "pepel:textures/entity/npc/marta.png",
                 "pepel_marta",
-                new DialogOption(0, FishermanDialogs.MARTA_START_ID, "Разговор"),
-                new DialogOption(1, FishermanDialogs.MARTA_WORK_ID, "Что делать?"),
-                new DialogOption(2, FishermanDialogs.MARTA_WHO_ID, "Кто ты?")
-        ));
+                new DialogOption[]{
+                        new DialogOption(0, FishermanDialogs.MARTA_START_ID, "Разговор"),
+                        new DialogOption(1, FishermanDialogs.MARTA_WORK_ID, "Что делать?"),
+                        new DialogOption(2, FishermanDialogs.MARTA_WHO_ID, "Кто ты?")
+                });
     }
 
-    private static void spawn(ServerPlayer player, StoryNpc npc)
+    private static void spawnNearPlayer(ServerPlayer player, StoryNpc npc)
     {
         ServerLevel level = player.serverLevel();
         BlockPos pos = findSpawnPos(level, player);
         float yaw = player.getYRot() + 180.0f;
+        spawnInternal(level, pos, yaw, npc, player);
+    }
 
+    private static boolean spawnInternal(ServerLevel level, BlockPos pos, float yaw, StoryNpc npc, ServerPlayer player)
+    {
         EntityType<?> npcType = ForgeRegistries.ENTITY_TYPES.getValue(CUSTOM_NPC_ID);
         if (npcType != null)
         {
@@ -75,9 +125,12 @@ public class StoryNpcSpawner
             if (entity != null)
             {
                 level.addFreshEntity(entity);
-                player.displayClientMessage(Component.literal("§aNPC заспавнен: " + npc.name()), false);
+                if (player != null)
+                {
+                    player.displayClientMessage(Component.literal("§aNPC заспавнен: " + npc.name()), false);
+                }
                 PepelEdema.LOGGER.info("{} (Custom NPC) заспавнен на {}", npc.name(), pos);
-                return;
+                return true;
             }
             PepelEdema.LOGGER.warn("Не удалось загрузить Custom NPC {}, откат на villager", npc.name());
         }
@@ -89,7 +142,11 @@ public class StoryNpcSpawner
         villager.setPersistenceRequired();
         villager.addTag(npc.tag());
         level.addFreshEntity(villager);
-        player.displayClientMessage(Component.literal("§eCustom NPCs не найден, заспавнен villager: " + npc.name()), false);
+        if (player != null)
+        {
+            player.displayClientMessage(Component.literal("§eCustom NPCs не найден, заспавнен villager: " + npc.name()), false);
+        }
+        return false;
     }
 
     private static BlockPos findSpawnPos(ServerLevel level, ServerPlayer player)
@@ -99,11 +156,6 @@ public class StoryNpcSpawner
                 Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
                 new BlockPos(base.getX(), 0, base.getZ())
         );
-    }
-
-    private static StoryNpc storyNpc(String name, String texture, String tag, DialogOption... options)
-    {
-        return new StoryNpc(name, texture, tag, options);
     }
 
     private static CompoundTag buildNpcNbt(StoryNpc npc)

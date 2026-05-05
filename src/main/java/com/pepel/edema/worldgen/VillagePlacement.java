@@ -5,6 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.pepel.edema.PepelEdema;
+import com.pepel.edema.event.StoryNpcSpawner;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.Holder;
@@ -238,6 +239,15 @@ public class VillagePlacement
         //   Pass 3: применяем heightMap (выравнивание).
         //   Pass 4: ставим все template'ы — они уже не затирают друг друга, землю под собой
         //           тоже не модифицируют (она уже выровнена).
+        // Дополнительный force-load вокруг bestPivot. Первый load был центрирован на
+        // target (4521, 2880), а bestPivot ушёл на (dx=48, dz=-176). Хотя bbox дальних
+        // зданий (например ivar_house1 на oz=-22) формально внутри первой зоны, на практике
+        // ChunkStatus.SURFACE может быть недостаточен для MOTION_BLOCKING_NO_LEAVES heightmap'а
+        // — он валиден только после FEATURES. Грузим повторно вокруг bestPivot с большим
+        // запасом (max |ox|/|oz|=25 в манифесте + bbox/2 (~16) + EDGE_FEATHER (4) ≈ 50 на сторону).
+        int villageLoadSide = 160;
+        forceLoadChunks(level, bestPivotX, bestPivotZ, villageLoadSide);
+
         List<BuildingPlan> plans = new ArrayList<>();
         for (Building b : buildings)
         {
@@ -488,6 +498,29 @@ public class VillagePlacement
             PepelEdema.LOGGER.info("[village] дорожки: {} блоков gravel'я положено", painted);
         }
 
+        // Pass 6: автоспавн story NPC в зданиях с заданным полем npc в манифесте.
+        // pivotX/pivotZ — центр здания, world Y = p.targetY (templatePos.y = targetY-1, template Y=0 это пол → ходячий уровень = world Y=targetY).
+        // Если центральная клетка занята (стена/кровать/стол), пробуем offset'ы от центра.
+        int npcsExpected = 0;
+        for (BuildingPlan pl : plans) if (pl.npc != null) npcsExpected++;
+        int npcsSpawned = 0;
+        for (BuildingPlan p : plans)
+        {
+            if (p.npc == null) continue;
+            BlockPos spawnPos = findFreeSpawnSpot(level, p);
+            boolean ok = StoryNpcSpawner.spawnAt(level, spawnPos, 180.0f, p.npc);
+            if (ok)
+            {
+                npcsSpawned++;
+                PepelEdema.LOGGER.info("[village] NPC {} заспавнен в {} на {}", p.npc, p.id, spawnPos);
+            }
+            else
+            {
+                PepelEdema.LOGGER.error("[village] NPC {} в {} не заспавнился как customnpcs (упал в villager fallback или совсем не создался)", p.npc, p.id);
+            }
+        }
+        PepelEdema.LOGGER.info("[village] story NPC: заспавнено {} из {}", npcsSpawned, npcsExpected);
+
         // Финальный pivot для savedData = pivot колодца если есть, иначе bestPivot из FLAT_SEARCH.
         // Y берём из well.targetY (или среднее по plans если well нет).
         int finalY = wellPlan != null ? wellPlan.targetY : (plans.isEmpty() ? 64 : plans.get(0).targetY);
@@ -659,6 +692,50 @@ public class VillagePlacement
         return false;
     }
 
+    /**
+     * Ищет свободную клетку для автоспавна NPC внутри здания.
+     * Сканируем колонну Y ∈ [targetY-2, targetY+5] для каждого offset (от центра наружу):
+     * walkable = пол (Y-1 непрозрачный) + 2 блока воздуха над ним (foot + head).
+     * Это нужно потому что pivot может оказаться в фундаменте/плите/мебели:
+     *   - ivar_house1 имеет cobblestone slab фундамент на templateY=1 → world Y=targetY,
+     *     а пол комнаты начинается с templateY=2 → world Y=targetY+1.
+     *   - В herb_house Y=targetY уже сразу пол → находится с первой попытки.
+     * Если ничего не подошло — возвращаем pivot,targetY (NPC может оказаться в блоке,
+     * но это лучше чем не заспавниться; такие случаи логируются и решаются правкой schem).
+     */
+    private static BlockPos findFreeSpawnSpot(ServerLevel level, BuildingPlan p)
+    {
+        int[][] offsets = {
+                {0, 0},
+                {1, 0}, {0, 1}, {-1, 0}, {0, -1},
+                {1, 1}, {1, -1}, {-1, 1}, {-1, -1},
+                {2, 0}, {0, 2}, {-2, 0}, {0, -2}
+        };
+        for (int[] off : offsets)
+        {
+            int x = p.pivotX + off[0];
+            int z = p.pivotZ + off[1];
+            for (int y = p.targetY - 2; y <= p.targetY + 5; y++)
+            {
+                if (isWalkable(level, x, y, z)) return new BlockPos(x, y, z);
+            }
+        }
+        return new BlockPos(p.pivotX, p.targetY, p.pivotZ);
+    }
+
+    /**
+     * walkable = блок под ногами (Y-1) непрозрачный, ноги (Y) и голова (Y+1) — воздух.
+     * Использование isAir() для головы/ног отвергает любые блоки (включая полу-прозрачные
+     * слэбы и лестницы), но это и нужно — NPC должен стоять, не пересекаясь с геометрией.
+     */
+    private static boolean isWalkable(ServerLevel level, int x, int y, int z)
+    {
+        BlockState floor = level.getBlockState(new BlockPos(x, y - 1, z));
+        BlockState foot  = level.getBlockState(new BlockPos(x, y, z));
+        BlockState head  = level.getBlockState(new BlockPos(x, y + 1, z));
+        return !floor.isAir() && foot.isAir() && head.isAir();
+    }
+
     /** Упакованный ключ (x,z) для HashMap — sign-extended в long. */
     private static long key(int x, int z)
     {
@@ -674,6 +751,7 @@ public class VillagePlacement
         int originX, originZ;  // нижний-левый угол bbox
         int maxX, maxZ;        // верхний-правый угол bbox
         int targetY;           // 90-й перцентиль findGroundY по bbox этого здания
+        String npc;            // story NPC для автоспавна, null если не нужен
     }
 
     /** Подготавливает план здания: загружает template, считает bbox. null если не удалось. */
@@ -698,6 +776,7 @@ public class VillagePlacement
         }
         BuildingPlan p = new BuildingPlan();
         p.id = b.id;
+        p.npc = b.npc;
         p.template = template;
         p.pivotX = pivotBaseX + b.ox;
         p.pivotZ = pivotBaseZ + b.oz;
@@ -719,6 +798,25 @@ public class VillagePlacement
         }
         // Гарантируем хотя бы один сэмпл на маленьком bbox (well: 5×5, q_board: 8×5).
         if (heights.isEmpty()) heights.add(findGroundY(level, p.pivotX, p.pivotZ));
+
+        // Sanity-фильтр: выбрасываем сэмплы на minBuildHeight — это битые heightmap'ы
+        // незагруженных или недогруженных чанков (видели реальный случай:
+        // ivar_house1 c targetY=-64, Pass 3 выкопал 76к блоков и обнажил стронгхолд).
+        int minH = level.getMinBuildHeight();
+        int rawSamples = heights.size();
+        heights.removeIf(h -> h <= minH + 1);
+        if (heights.isEmpty())
+        {
+            PepelEdema.LOGGER.error("[village] preparePlan({}): все {} сэмплов heightmap битые (= minBuildHeight). " +
+                            "Чанки в bbox=[{}..{}, {}..{}] не загружены до нужного статуса. Здание пропущено.",
+                    b.id, rawSamples, p.originX, p.maxX, p.originZ, p.maxZ);
+            return null;
+        }
+        if (heights.size() < rawSamples)
+        {
+            PepelEdema.LOGGER.warn("[village] preparePlan({}): отброшено {} битых сэмплов из {}, осталось {}",
+                    b.id, rawSamples - heights.size(), rawSamples, heights.size());
+        }
         heights.sort(Integer::compareTo);
         int idx = (int) Math.round(0.9 * (heights.size() - 1));
         p.targetY = heights.get(Math.min(idx, heights.size() - 1));
@@ -959,6 +1057,7 @@ public class VillagePlacement
                 b.id = o.get("id").getAsString();
                 b.ox = o.get("ox").getAsInt();
                 b.oz = o.get("oz").getAsInt();
+                b.npc = o.has("npc") ? o.get("npc").getAsString() : null;
                 out.add(b);
             }
             return out;
@@ -974,5 +1073,6 @@ public class VillagePlacement
     {
         String id;
         int ox, oz;
+        String npc; // null если NPC в этом здании не нужен
     }
 }
