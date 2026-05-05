@@ -211,3 +211,36 @@ tasks.register('convertSchemToNbt', Exec) {
     commandLine 'python', script.absolutePath, src.absolutePath, dst.absolutePath
 }
 tasks.named('processResources').configure { dependsOn 'convertSchemToNbt' }
+
+// Конвертация schem-src/village/*.schem -> data/pepel/structures/village/*.nbt.
+// village-mode конвертера выключает island-специфичные трансформации
+// (REMAP stone→sandstone, OUTER_SAND, water/sand stripping, pit detection).
+tasks.register('convertVillageSchems', Exec) {
+    def script = file('schem-src/schem_to_nbt.py')
+    def srcDir = file('schem-src/village')
+    def dstDir = file('src/main/resources/data/pepel/structures/village')
+    inputs.file script
+    inputs.dir  srcDir
+    outputs.dir dstDir
+
+    doFirst {
+        dstDir.mkdirs()
+        def schems = srcDir.listFiles({ f -> f.name.endsWith('.schem') } as FileFilter)
+        if (schems == null || schems.length == 0) {
+            throw new org.gradle.api.GradleException("Нет .schem файлов в ${srcDir}")
+        }
+        for (s in schems) {
+            def name = s.name.replace('.schem', '.nbt')
+            def dst  = new File(dstDir, name)
+            println "[village convert] ${s.name} -> village/${name}"
+            exec {
+                commandLine 'python', script.absolutePath, '--village-mode',
+                        s.absolutePath, dst.absolutePath
+            }
+        }
+    }
+    // commandLine — заглушка: реальные вызовы делает doFirst через exec{}.
+    // Без неё Exec упадёт. Используем безвредный true.
+    commandLine 'cmd', '/c', 'echo', 'village convert done'
+}
+tasks.named('processResources').configure { dependsOn 'convertVillageSchems' }

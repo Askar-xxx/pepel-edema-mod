@@ -61,7 +61,12 @@ def parse_blockstate(s: str):
     return name, props
 
 
-def convert(src: Path, dst: Path):
+def convert(src: Path, dst: Path, village_mode: bool = False):
+    """
+    village_mode=True выключает island-специфичные трансформации:
+    - REMAP stone→sandstone, OUTER_SAND, water/sand stripping, pepel_pit detection.
+    Деревенские schem'ы конвертируются как есть (water/sand сохраняются если есть).
+    """
     schem = nbtlib.load(src, gzipped=True)
 
     W = int(schem['Width'])
@@ -79,18 +84,20 @@ def convert(src: Path, dst: Path):
     # Запоминаем исходные id блоков, вокруг которых нужен внешний слой sand —
     # ДО применения REMAP (после REMAP имя в id_to_state поменяется).
     outer_source_ids = set()
-    for old_id, state_str in enumerate(id_to_state):
-        name, _ = parse_blockstate(state_str)
-        if name in OUTER_SAND_AROUND:
-            outer_source_ids.add(old_id)
+    if not village_mode:
+        for old_id, state_str in enumerate(id_to_state):
+            name, _ = parse_blockstate(state_str)
+            if name in OUTER_SAND_AROUND:
+                outer_source_ids.add(old_id)
 
     # Применяем REMAP: заменяем state-строку для id-ов исходных блоков.
     remap_count = {}
-    for old_id, state_str in enumerate(id_to_state):
-        name, _ = parse_blockstate(state_str)
-        if name in REMAP:
-            id_to_state[old_id] = REMAP[name]
-            remap_count[name] = remap_count.get(name, 0) + 1
+    if not village_mode:
+        for old_id, state_str in enumerate(id_to_state):
+            name, _ = parse_blockstate(state_str)
+            if name in REMAP:
+                id_to_state[old_id] = REMAP[name]
+                remap_count[name] = remap_count.get(name, 0) + 1
 
     air_id = palette_map.get('minecraft:air')
 
@@ -102,14 +109,17 @@ def convert(src: Path, dst: Path):
     skip_ids = set()
     if air_id is not None:
         skip_ids.add(air_id)
-    for state_str, sid in palette_map.items():
-        name = state_str.split('[', 1)[0]
-        if name in ('minecraft:water', 'minecraft:flowing_water',
-                    'minecraft:bubble_column', 'minecraft:kelp',
-                    'minecraft:kelp_plant', 'minecraft:seagrass',
-                    'minecraft:tall_seagrass',
-                    'minecraft:sand', 'minecraft:red_sand'):
-            skip_ids.add(sid)
+    if not village_mode:
+        # island-mode: вырезаем воду (натуральный океан зальёт) и служебный песок WorldEdit-маркера.
+        # village-mode: ничего лишнего, конвертируем как есть (только air игнорируется).
+        for state_str, sid in palette_map.items():
+            name = state_str.split('[', 1)[0]
+            if name in ('minecraft:water', 'minecraft:flowing_water',
+                        'minecraft:bubble_column', 'minecraft:kelp',
+                        'minecraft:kelp_plant', 'minecraft:seagrass',
+                        'minecraft:tall_seagrass',
+                        'minecraft:sand', 'minecraft:red_sand'):
+                skip_ids.add(sid)
 
     raw = bytes((b & 0xFF) for b in schem['BlockData'])
     ids = decode_varint_array(raw, W * H * L)
@@ -152,9 +162,11 @@ def convert(src: Path, dst: Path):
 
     # Находим самую глубокую яму внутри bbox: argmax(avg_neighbors_top - top).
     # Требуем минимум 6 соседей с данными — иначе это кромка острова, не яма.
+    # village-mode: ямы детектить незачем, ставим яму=None.
     best_pit = None
     best_depth = 0.0
     for x in range(min_x, max_x + 1):
+        if village_mode: break
         for z in range(min_z, max_z + 1):
             y = hm[x][z]
             if y < 0:
@@ -278,15 +290,17 @@ def convert(src: Path, dst: Path):
 
 
 def main():
-    if len(sys.argv) != 3:
-        sys.stderr.write("usage: schem_to_nbt.py <src.schem> <dst.nbt>\n")
+    args = [a for a in sys.argv[1:] if not a.startswith('--')]
+    village_mode = '--village-mode' in sys.argv[1:]
+    if len(args) != 2:
+        sys.stderr.write("usage: schem_to_nbt.py [--village-mode] <src.schem> <dst.nbt>\n")
         sys.exit(1)
-    src = Path(sys.argv[1])
-    dst = Path(sys.argv[2])
+    src = Path(args[0])
+    dst = Path(args[1])
     if not src.is_file():
         sys.stderr.write(f"ERROR: src not found: {src}\n")
         sys.exit(1)
-    convert(src, dst)
+    convert(src, dst, village_mode=village_mode)
 
 
 if __name__ == '__main__':
