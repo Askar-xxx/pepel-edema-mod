@@ -21,6 +21,10 @@ public class StoryNpcSpawner
             new ResourceLocation("customnpcs", "customnpc");
 
     private static final int DIALOG_COLOR = 14737632;
+    private static final String HOMEBOUND = "pepel_homebound";
+    private static final String HOME_X = "pepel_home_x";
+    private static final String HOME_Y = "pepel_home_y";
+    private static final String HOME_Z = "pepel_home_z";
 
     public static void spawnIvarNear(ServerPlayer player)
     {
@@ -124,6 +128,7 @@ public class StoryNpcSpawner
             });
             if (entity != null)
             {
+                markHome(entity, pos, npc);
                 level.addFreshEntity(entity);
                 if (player != null)
                 {
@@ -147,6 +152,27 @@ public class StoryNpcSpawner
             player.displayClientMessage(Component.literal("§eCustom NPCs не найден, заспавнен villager: " + npc.name()), false);
         }
         return false;
+    }
+
+    private static void markHome(Entity entity, BlockPos pos, StoryNpc npc)
+    {
+        if (!"pepel_ivar".equals(npc.tag())) return;
+        CompoundTag data = entity.getPersistentData();
+        data.putBoolean(HOMEBOUND, true);
+        data.putInt(HOME_X, pos.getX());
+        data.putInt(HOME_Y, pos.getY());
+        data.putInt(HOME_Z, pos.getZ());
+    }
+
+    public static boolean isHomebound(Entity entity)
+    {
+        return entity.getPersistentData().getBoolean(HOMEBOUND);
+    }
+
+    public static BlockPos getHomePos(Entity entity)
+    {
+        CompoundTag data = entity.getPersistentData();
+        return new BlockPos(data.getInt(HOME_X), data.getInt(HOME_Y), data.getInt(HOME_Z));
     }
 
     private static BlockPos findSpawnPos(ServerLevel level, ServerPlayer player)

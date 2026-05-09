@@ -123,6 +123,7 @@ def convert(src: Path, dst: Path, village_mode: bool = False):
 
     raw = bytes((b & 0xFF) for b in schem['BlockData'])
     ids = decode_varint_array(raw, W * H * L)
+    strip_flat_base = village_mode and src.name == 'fallen_cart.schem'
 
     # Формат Sponge: индекс = x + z*W + y*W*L
     # Формат Structure: хранит blocks как список не-air блоков.
@@ -136,6 +137,10 @@ def convert(src: Path, dst: Path, village_mode: bool = False):
             base = y * W * L + z * W
             for x in range(W):
                 bid = ids[base + x]
+                if strip_flat_base and y == 0:
+                    base_name = id_to_state[bid].split('[', 1)[0]
+                    if base_name in ('minecraft:grass_block', 'minecraft:dirt'):
+                        continue
                 if bid in skip_ids:
                     continue
                 used_ids.add(bid)
@@ -155,7 +160,12 @@ def convert(src: Path, dst: Path, village_mode: bool = False):
         for z in range(L):
             base = y * W * L + z * W
             for x in range(W):
-                if ids[base + x] in skip_ids:
+                bid = ids[base + x]
+                if strip_flat_base and y == 0:
+                    base_name = id_to_state[bid].split('[', 1)[0]
+                    if base_name in ('minecraft:grass_block', 'minecraft:dirt'):
+                        continue
+                if bid in skip_ids:
                     continue
                 if y > hm[x][z]:
                     hm[x][z] = y
@@ -242,6 +252,10 @@ def convert(src: Path, dst: Path, village_mode: bool = False):
             base = y * W * L + z * W
             for x in range(W):
                 bid = ids[base + x]
+                if strip_flat_base and y == 0:
+                    base_name = id_to_state[bid].split('[', 1)[0]
+                    if base_name in ('minecraft:grass_block', 'minecraft:dirt'):
+                        continue
                 if (x, y, z) in sand_override:
                     # Эти позиции в исходнике были skip-блоком (air/water/служебный песок);
                     # кладём внешний слой sand вместо них.

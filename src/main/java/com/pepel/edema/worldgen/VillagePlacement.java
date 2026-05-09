@@ -466,7 +466,7 @@ public class VillagePlacement
         // ===== Phase 4: force-load #2 + preparePlan =====
         private void preparePlans()
         {
-            forceLoadChunks(level, bestPivotX, bestPivotZ, 160);
+            forceLoadChunks(level, bestPivotX, bestPivotZ, 220);
             plans = new ArrayList<>();
             for (Building b : buildings)
             {
@@ -723,7 +723,9 @@ public class VillagePlacement
                 {
                     int px = x + ox, pz = z + oz;
                     if (insideAnyBuilding(plans, px, pz)) continue;
-                    int gy = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, px, pz) - 1;
+                    if (hasTreeInColumn(level, px, pz)) continue;
+
+                    int gy = findGroundY(level, px, pz) - 1;
                     BlockPos gp = new BlockPos(px, gy, pz);
                     BlockState ground = level.getBlockState(gp);
                     if (ground.is(Blocks.GRASS_BLOCK) || ground.is(Blocks.DIRT) || ground.is(Blocks.PODZOL)
@@ -740,6 +742,23 @@ public class VillagePlacement
             if (e2 < dx)  { err += dx; z += sz; }
         }
         return painted;
+    }
+
+    /**
+     * True if the road brush would pass under a tree crown/trunk in this column.
+     * Roads should bend around living terrain: do not break logs/leaves and do not
+     * repaint the ground directly under them.
+     */
+    private static boolean hasTreeInColumn(ServerLevel level, int x, int z)
+    {
+        int groundY = findGroundY(level, x, z);
+        int topY = level.getHeight(Heightmap.Types.MOTION_BLOCKING, x, z);
+        for (int y = groundY; y <= topY; y++)
+        {
+            BlockState bs = level.getBlockState(new BlockPos(x, y, z));
+            if (bs.is(BlockTags.LOGS) || bs.is(BlockTags.LEAVES)) return true;
+        }
+        return false;
     }
 
     /** True если (x,z) внутри bbox любого здания из plans. */
