@@ -11,7 +11,10 @@ import net.minecraft.core.Direction;
 import net.minecraft.core.Holder;
 import net.minecraft.core.Vec3i;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.TickTask;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.packs.resources.Resource;
 import net.minecraft.server.packs.resources.ResourceManager;
 import net.minecraft.tags.BlockTags;
@@ -131,404 +134,575 @@ public class VillagePlacement
     /** Префикс template'ов зданий: pepel:village/{id}. */
     private static final String TEMPLATE_PREFIX = "village/";
 
+    /**
+     * Точка входа: запускает фоновую генерацию деревни. Сама работа делается в state-machine
+     * Task, разбитой по тикам через MinecraftServer.tell(TickTask) — мир продолжает тикать,
+     * игрок не видит зависания. См. Task ниже про конкретные фазы.
+     */
     public static void tryPlaceVillage(ServerLevel level, BlockPos islandCenter, BlockPos fishermanPos)
     {
-        VillagePriyutState state = VillagePriyutState.get(level);
-        if (state.isSpawned())
+        VillagePriyutState savedState = VillagePriyutState.get(level);
+        if (savedState.isSpawned())
         {
-            PepelEdema.LOGGER.info("[village] уже заспавнена в {}, пропускаем", state.getPivot());
+            PepelEdema.LOGGER.info("[village] уже заспавнена в {}, пропускаем", savedState.getPivot());
             return;
         }
+        new Task(level, islandCenter, fishermanPos, savedState).start();
+    }
 
-        // === Вектор от острова к рыбаку ===
-        double dx = fishermanPos.getX() - islandCenter.getX();
-        double dz = fishermanPos.getZ() - islandCenter.getZ();
-        double len = Math.sqrt(dx * dx + dz * dz);
-        if (len < 1.0)
+    /**
+     * State-machine генератор деревни. Каждая фаза = один (или несколько) серверных тиков
+     * через server.tell(TickTask). Между тиками сервер обрабатывает мобов, физику, события —
+     * игрок не видит фриза.
+     *
+     * Phase-0  setup        : вектор за рыбака, список чанков для предзагрузки.
+     * Phase-1  preload      : N чанков/тик до полного покрытия зоны FLAT_SEARCH (самая длинная
+     *                         фаза — типично 22-28 секунд при 2 чанка/тик, 1122 чанка).
+     *                         CHUNKS_PER_TICK адаптивный: 2 если игрок далеко, 50 (форс) если
+     *                         подошёл ближе SAFETY_DISTANCE — иначе увидит недостроенную деревню.
+     * Phase-2  manifest     : чтение priyut.json (1 ms).
+     * Phase-3  flat-search  : поиск плоского биома (122 ms — лёгкий пик TPS, один тик).
+     * Phase-4  prepare-plans: force-load #2 + preparePlan (5 ms).
+     * Phase-5  pass1        : heightmap общей зоны (16 ms).
+     * Phase-6  pass2        : deforest (64 ms).
+     * Phase-7  pass3        : выравнивание земли (10 ms).
+     * Phase-8  pass4        : placement шаблонов (62 ms).
+     * Phase-9  finalize     : pass5 (дороги) + pass6 (NPCs) + savedData (10 ms).
+     */
+    private static class Task
+    {
+        /**
+         * Сколько FORCED-тикетов ставим за один тик. Хотя сам setChunkForced дешёвый,
+         * каждый тикет инициирует chunk gen pipeline которому нужны main-thread слоты
+         * для FEATURES (деревья, структуры). Опытным путём:
+         *   200/тик → 7.5 сек "Can't keep up" (main-thread queue overflow)
+         *   30/тик  → 5.25 сек "Can't keep up" (всё ещё много для тяжёлых биомов)
+         *   15/тик  → компромисс: 1122/15 ≈ 75 тиков постановки (≈4 сек),
+         *             preload ~25-30 сек wall-time, лаги ожидаются ≈2-3 сек.
+         */
+        private static final int TICKETS_PER_TICK = 15;
+        /** Если ближайший игрок ближе этого расстояния до bestPivot — врубаем форс. */
+        private static final int SAFETY_DISTANCE = 100;
+        /**
+         * Минимальная дистанция от рыбака до bestPivot. FLAT_SEARCH ищет в радиусе ±192
+         * от target=fisherman+dir*300, в худшем случае (направление назад) кандидат может
+         * оказаться в 108 блоках от рыбака — игрок увидит деревню "перед мордой" с пирса.
+         * 200 даёт деревню за горизонтом render-distance даже на чанковом стриме 16 чанков.
+         */
+        private static final int MIN_DISTANCE_FROM_FISHERMAN_SQ = 200 * 200;
+
+        private final ServerLevel level;
+        private final BlockPos islandCenter, fishermanPos;
+        private final VillagePriyutState savedState;
+        private final long tStart;
+        private long tPhase;
+        private int phase = 0;
+
+        // setup → preload
+        private int targetX, targetZ;
+        private int loadSide;
+        private int[] chunkCoords;     // pairs flat: cx0, cz0, cx1, cz1...
+        private int chunkCursor;
+        private int chunksTotal;
+
+        // flat-search → prepare
+        private int bestPivotX, bestPivotZ;
+        private List<Building> buildings;
+        private List<BuildingPlan> plans;
+
+        // pass1
+        private Map<Long, Integer> heightMap;
+
+        // pass4
+        private int placed;
+
+        // pass5
+        private BuildingPlan wellPlan;
+
+        Task(ServerLevel level, BlockPos islandCenter, BlockPos fishermanPos, VillagePriyutState savedState)
         {
-            PepelEdema.LOGGER.warn("[village] рыбак почти в центре острова (len={}), пропускаем", len);
-            return;
+            this.level = level;
+            this.islandCenter = islandCenter;
+            this.fishermanPos = fishermanPos;
+            this.savedState = savedState;
+            this.tStart = System.currentTimeMillis();
+            this.tPhase = tStart;
         }
 
-        int targetX = (int) (fishermanPos.getX() + dx / len * DISTANCE_FROM_FISHERMAN);
-        int targetZ = (int) (fishermanPos.getZ() + dz / len * DISTANCE_FROM_FISHERMAN);
-
-        // === Force-load всех чанков в зоне поиска ===
-        // Без этого level.getHeight для незагруженных чанков возвращает minBuildHeight=-64,
-        // FLAT_SEARCH "находит" их как идеально-плоское место и деревня впечатывается в дно мира.
-        // Размер зоны = 2*FLAT_SEARCH_RADIUS + FLATNESS_BBOX_SIDE (внешний край широкого bbox
-        // для самых дальних кандидатов).
-        int loadSide = 2 * FLAT_SEARCH_RADIUS + FLATNESS_BBOX_SIDE;
-        forceLoadChunks(level, targetX, targetZ, loadSide);
-
-        // === Загружаем manifest ===
-        List<Building> buildings = loadManifest(level);
-        if (buildings == null || buildings.isEmpty())
+        void start()
         {
-            PepelEdema.LOGGER.error("[village] manifest пуст или не загрузился, пропускаем");
-            return;
+            scheduleNext();
         }
-        PepelEdema.LOGGER.info("[village] manifest: {} зданий", buildings.size());
 
-        // === Поиск плоского НЕ-ВОДНОГО места в дружественном биоме (90×90 bbox) ===
-        // Score-based: bbox-delta + штраф BAD_BIOME_PENALTY если биом из BIOME_BLACKLIST.
-        // Так любой кандидат в хорошем биоме (плэйнсы/обычный лес/берёзы) выигрывает у любого
-        // в Dark Forest/Mushroom Fields/болоте даже если последний идеально плоский. Если
-        // НИ ОДНОГО хорошего биома в зоне поиска — fallback к лучшему плохому (с warning).
-        // Вода — hard reject (как и раньше).
-        int bestPivotX = targetX, bestPivotZ = targetZ;
-        int bestScore = Integer.MAX_VALUE;
-        int bestDelta = Integer.MAX_VALUE;
-        boolean bestInGoodBiome = false;
-        int rejectedWater = 0, badBiomeCount = 0, candidatesTotal = 0;
-        for (int ox = -FLAT_SEARCH_RADIUS; ox <= FLAT_SEARCH_RADIUS; ox += FLAT_SEARCH_STEP)
+        private void scheduleNext()
         {
-            for (int oz = -FLAT_SEARCH_RADIUS; oz <= FLAT_SEARCH_RADIUS; oz += FLAT_SEARCH_STEP)
+            MinecraftServer server = level.getServer();
+            if (server == null) return;
+            server.tell(new TickTask(server.getTickCount() + 1, this::tick));
+        }
+
+        private void tick()
+        {
+            if (phase < 0) return;
+            try
             {
-                candidatesTotal++;
-                int cx = targetX + ox;
-                int cz = targetZ + oz;
-                AreaScan scan = scanArea(level, cx, cz, FLATNESS_BBOX_SIDE);
-                if (scan.waterRatio > MAX_WATER_RATIO)
+                switch (phase)
                 {
-                    rejectedWater++;
-                    continue;
-                }
-                boolean badBiome = isBadBiome(level, cx, cz);
-                if (badBiome) badBiomeCount++;
-                int score = scan.delta + (badBiome ? BAD_BIOME_PENALTY : 0);
-                if (score < bestScore)
-                {
-                    bestScore = score;
-                    bestDelta = scan.delta;
-                    bestPivotX = cx;
-                    bestPivotZ = cz;
-                    bestInGoodBiome = !badBiome;
-                }
-            }
-        }
-        PepelEdema.LOGGER.info("[village] FLAT_SEARCH: target=({},?,{}), кандидатов={} (вода-reject={}, плохой-биом={}), pivot=({},?,{}) (сдвиг dx={},dz={}), bbox-delta={}, biome-ok={}",
-                targetX, targetZ, candidatesTotal, rejectedWater, badBiomeCount,
-                bestPivotX, bestPivotZ,
-                bestPivotX - targetX, bestPivotZ - targetZ, bestDelta, bestInGoodBiome);
-        if (bestScore == Integer.MAX_VALUE)
-        {
-            PepelEdema.LOGGER.warn("[village] все кандидаты на воде, деревня не поставлена. Расширь FLAT_SEARCH_RADIUS или поплыви в другую сторону.");
-            return;
-        }
-        if (!bestInGoodBiome)
-        {
-            PepelEdema.LOGGER.warn("[village] хороший биом не найден в радиусе {} — деревня сядет в плохом ({} кандидатов из {} были в blacklist). Поплыви дальше.",
-                    FLAT_SEARCH_RADIUS, badBiomeCount, candidatesTotal);
-        }
-
-        // Sanity-check на villageTargetY убран: каждое здание считает targetY локально в
-        // preparePlan() из своего bbox. Если строим в нормальной точке (bbox-delta фильтр
-        // FLAT_SEARCH прошёл, водой не залило), все локальные targetY будут разумные.
-
-        // === Двухпроходный алгоритм размещения ===
-        // Прежняя реализация ставила каждое здание по очереди (deforest → align → place):
-        // feather одного здания затирал template уже поставленного соседа, отсюда обрезанные крыши
-        // и аномальные окопы между зданиями. Теперь:
-        //   Pass 1: собираем целевой columnY для каждого (x,z) в общей зоне деревни.
-        //           Внутри bbox любого здания — жёстко villageTargetY (приоритет).
-        //           В feather-кольце — lerp от villageTargetY к natural heightmap.
-        //           Если (x,z) попал в feather нескольких зданий — берём max columnY (ближе к
-        //           деревне). Натуральный heightmap читаем ОДИН раз до любых модификаций.
-        //   Pass 2: deforestation в общей зоне.
-        //   Pass 3: применяем heightMap (выравнивание).
-        //   Pass 4: ставим все template'ы — они уже не затирают друг друга, землю под собой
-        //           тоже не модифицируют (она уже выровнена).
-        // Дополнительный force-load вокруг bestPivot. Первый load был центрирован на
-        // target (4521, 2880), а bestPivot ушёл на (dx=48, dz=-176). Хотя bbox дальних
-        // зданий (например ivar_house1 на oz=-22) формально внутри первой зоны, на практике
-        // ChunkStatus.SURFACE может быть недостаточен для MOTION_BLOCKING_NO_LEAVES heightmap'а
-        // — он валиден только после FEATURES. Грузим повторно вокруг bestPivot с большим
-        // запасом (max |ox|/|oz|=25 в манифесте + bbox/2 (~16) + EDGE_FEATHER (4) ≈ 50 на сторону).
-        int villageLoadSide = 160;
-        forceLoadChunks(level, bestPivotX, bestPivotZ, villageLoadSide);
-
-        List<BuildingPlan> plans = new ArrayList<>();
-        for (Building b : buildings)
-        {
-            BuildingPlan p = preparePlan(level, b, bestPivotX, bestPivotZ);
-            if (p != null) plans.add(p);
-        }
-
-        // Pass 1: собираем heightmap. Каждое здание использует СВОЙ p.targetY (90-перцентиль
-        // local terrain), не общий villageTargetY — чтобы не делать общую плоскую платформу
-        // на весь village и пирамидальные террасы по краям. На пересечении feather'ов
-        // соседних зданий берём max columnY (ближе к плато ровнее).
-        Map<Long, Integer> heightMap = new HashMap<>();
-        for (BuildingPlan p : plans)
-        {
-            // Внутри bbox: жёстко p.targetY этого здания.
-            for (int x = p.originX; x <= p.maxX; x++)
-            {
-                for (int z = p.originZ; z <= p.maxZ; z++)
-                {
-                    heightMap.put(key(x, z), p.targetY);
+                    case 0: setup();         break;
+                    case 1: preloadChunks(); break;
+                    case 2: loadManifest_(); break;
+                    case 3: flatSearch();    break;
+                    case 4: preparePlans();  break;
+                    case 5: pass1();         break;
+                    case 6: pass2();         break;
+                    case 7: pass3();         break;
+                    case 8: pass4();         break;
+                    case 9: pass5_6_finalize(); break;
+                    default: return;
                 }
             }
-        }
-        for (BuildingPlan p : plans)
-        {
-            // Feather кольцо: lerp natural → p.targetY. Не трогаем уже занятые bbox-клетки.
-            for (int x = p.originX - EDGE_FEATHER; x <= p.maxX + EDGE_FEATHER; x++)
+            catch (Exception e)
             {
-                for (int z = p.originZ - EDGE_FEATHER; z <= p.maxZ + EDGE_FEATHER; z++)
+                PepelEdema.LOGGER.error("[village] task crashed at phase {}", phase, e);
+                releaseForcedChunks();
+                phase = -1;
+                return;
+            }
+            if (phase >= 0 && phase <= 9) scheduleNext();
+        }
+
+        private void logTiming(String name)
+        {
+            long now = System.currentTimeMillis();
+            PepelEdema.LOGGER.info("[village] timing: {} = {}ms", name, now - tPhase);
+            tPhase = now;
+        }
+
+        // ===== Phase 0: вычисляем target и список чанков =====
+        private void setup()
+        {
+            double dx = fishermanPos.getX() - islandCenter.getX();
+            double dz = fishermanPos.getZ() - islandCenter.getZ();
+            double len = Math.sqrt(dx * dx + dz * dz);
+            if (len < 1.0)
+            {
+                PepelEdema.LOGGER.warn("[village] рыбак почти в центре острова (len={}), пропускаем", len);
+                phase = -1;
+                return;
+            }
+            targetX = (int) (fishermanPos.getX() + dx / len * DISTANCE_FROM_FISHERMAN);
+            targetZ = (int) (fishermanPos.getZ() + dz / len * DISTANCE_FROM_FISHERMAN);
+            loadSide = 2 * FLAT_SEARCH_RADIUS + FLATNESS_BBOX_SIDE;
+
+            int half = loadSide / 2;
+            int cxMin = (targetX - half) >> 4, cxMax = (targetX + half) >> 4;
+            int czMin = (targetZ - half) >> 4, czMax = (targetZ + half) >> 4;
+            int cntX = cxMax - cxMin + 1, cntZ = czMax - czMin + 1;
+            chunksTotal = cntX * cntZ;
+            chunkCoords = new int[chunksTotal * 2];
+            int i = 0;
+            for (int cx = cxMin; cx <= cxMax; cx++)
+            {
+                for (int cz = czMin; cz <= czMax; cz++)
                 {
-                    long k = key(x, z);
-                    if (heightMap.containsKey(k)) continue; // уже bbox чьего-то здания
+                    chunkCoords[i++] = cx;
+                    chunkCoords[i++] = cz;
+                }
+            }
+            chunkCursor = 0;
+            PepelEdema.LOGGER.info("[village] async setup: target=({},?,{}), {} чанков предзагрузить ({}x{} зона)",
+                    targetX, targetZ, chunksTotal, loadSide, loadSide);
+            phase = 1;
+        }
 
-                    int distEdge = 0;
-                    if (x < p.originX) distEdge = Math.max(distEdge, p.originX - x);
-                    if (x > p.maxX)    distEdge = Math.max(distEdge, x - p.maxX);
-                    if (z < p.originZ) distEdge = Math.max(distEdge, p.originZ - z);
-                    if (z > p.maxZ)    distEdge = Math.max(distEdge, z - p.maxZ);
-                    if (distEdge == 0 || distEdge > EDGE_FEATHER) continue;
+        // ===== Phase 1: async-предзагрузка через FORCED-тикеты =====
+        // Шаг A: ставим FORCED-тикет на каждый чанк (TICKETS_PER_TICK/тик). Это не sync
+        //        chunk gen — только добавление ticket в DistanceManager (~микросекунды),
+        //        chunk gen происходит в worker pool параллельно server thread.
+        // Шаг B: ждём пока все чанки попадут в level.hasChunk() — это значит chunk gen
+        //        дошёл до FULL и chunk доступен для блочных операций.
+        // Server thread на этой фазе вообще не блокируется — лагать не должно.
+        private void preloadChunks()
+        {
+            // Step A: пакетно ставим тикеты пока не закроем все
+            int requested = 0;
+            while (chunkCursor < chunksTotal && requested < TICKETS_PER_TICK)
+            {
+                int cx = chunkCoords[chunkCursor * 2];
+                int cz = chunkCoords[chunkCursor * 2 + 1];
+                level.setChunkForced(cx, cz, true);
+                chunkCursor++;
+                requested++;
+            }
+            // Step B: если все тикеты поставлены — проверяем готовность всех чанков.
+            // hasChunk() = true когда chunk gen дошёл до FULL.
+            // Safety net: если игрок близко к зоне, не ждём остатки — двигаемся дальше,
+            // sync force-load #2 в Phase 4 догонит что нужно.
+            if (chunkCursor >= chunksTotal)
+            {
+                int ready = 0;
+                for (int i = 0; i < chunksTotal; i++)
+                {
+                    int cx = chunkCoords[i * 2];
+                    int cz = chunkCoords[i * 2 + 1];
+                    if (level.hasChunk(cx, cz)) ready++;
+                }
+                boolean playerNear = playerWithinSafetyDistance();
+                if (ready >= chunksTotal || playerNear)
+                {
+                    logTiming("preload (" + ready + "/" + chunksTotal + " чанков async через FORCED-тикеты"
+                            + (playerNear ? ", safety-net: игрок близко" : "") + ")");
+                    phase = 2;
+                }
+                // иначе остаёмся в фазе 1, ждём готовности
+            }
+        }
 
-                    // Медиана по 3×3 — отвергает одиночные ямы (одну клетку с natural=64 среди
-                    // соседей с natural=72) и не делает в ней высокую DIRT-башню при Pass 3 fill.
-                    // Реальные склоны (где много соседних клеток имеют такой же low natural)
-                    // медиана сохраняет.
-                    int natural = medianGroundY(level, x, z, 1);
-                    float weight = 1.0f - (float) distEdge / (EDGE_FEATHER + 1);
-                    int columnY = Math.round(p.targetY * weight + natural * (1.0f - weight));
-                    Integer prev = heightMap.get(k);
-                    // Пересечение feather'ов соседних зданий: берём max — ближе к плато ровнее.
-                    if (prev == null || columnY > prev)
+        /**
+         * Снимает все FORCED-тикеты, поставленные в Phase 1. Чанки возвращаются под
+         * управление обычной системы выгрузки (если игрок не рядом — выгрузятся).
+         * Вызывается в финале и при abort.
+         */
+        private void releaseForcedChunks()
+        {
+            if (chunkCoords == null) return;
+            int releaseUpTo = Math.min(chunkCursor, chunksTotal);
+            for (int i = 0; i < releaseUpTo; i++)
+            {
+                int cx = chunkCoords[i * 2];
+                int cz = chunkCoords[i * 2 + 1];
+                level.setChunkForced(cx, cz, false);
+            }
+        }
+
+        /**
+         * Safety net: если игрок зашёл в зону потенциальной деревни до завершения генерации —
+         * форсим оставшиеся чанки большим батчем (короткий лаг лучше чем видеть как деревья
+         * падают и здания "вырастают" из-под земли).
+         * Использует bestPivot если он уже посчитан, иначе target — на ранних фазах оба
+         * находятся в одной области.
+         */
+        private boolean playerWithinSafetyDistance()
+        {
+            int x = bestPivotX != 0 ? bestPivotX : targetX;
+            int z = bestPivotZ != 0 ? bestPivotZ : targetZ;
+            for (ServerPlayer p : level.players())
+            {
+                double pdx = p.getX() - x, pdz = p.getZ() - z;
+                if (pdx * pdx + pdz * pdz < (double) SAFETY_DISTANCE * SAFETY_DISTANCE) return true;
+            }
+            return false;
+        }
+
+        // ===== Phase 2: manifest =====
+        private void loadManifest_()
+        {
+            buildings = loadManifest(level);
+            if (buildings == null || buildings.isEmpty())
+            {
+                PepelEdema.LOGGER.error("[village] manifest пуст или не загрузился, пропускаем");
+                phase = -1;
+                return;
+            }
+            PepelEdema.LOGGER.info("[village] manifest: {} зданий", buildings.size());
+            logTiming("manifest");
+            phase = 3;
+        }
+
+        // ===== Phase 3: FLAT_SEARCH =====
+        private void flatSearch()
+        {
+            bestPivotX = targetX; bestPivotZ = targetZ;
+            int bestScore = Integer.MAX_VALUE, bestDelta = Integer.MAX_VALUE;
+            boolean bestInGoodBiome = false;
+            int rejectedWater = 0, rejectedNear = 0, badBiomeCount = 0, candidatesTotal = 0;
+            for (int ox = -FLAT_SEARCH_RADIUS; ox <= FLAT_SEARCH_RADIUS; ox += FLAT_SEARCH_STEP)
+            {
+                for (int oz = -FLAT_SEARCH_RADIUS; oz <= FLAT_SEARCH_RADIUS; oz += FLAT_SEARCH_STEP)
+                {
+                    candidatesTotal++;
+                    int cx = targetX + ox, cz = targetZ + oz;
+                    double dxF = cx - fishermanPos.getX();
+                    double dzF = cz - fishermanPos.getZ();
+                    if (dxF * dxF + dzF * dzF < MIN_DISTANCE_FROM_FISHERMAN_SQ)
                     {
-                        heightMap.put(k, columnY);
+                        rejectedNear++;
+                        continue;
+                    }
+                    AreaScan scan = scanArea(level, cx, cz, FLATNESS_BBOX_SIDE);
+                    if (scan.waterRatio > MAX_WATER_RATIO) { rejectedWater++; continue; }
+                    boolean badBiome = isBadBiome(level, cx, cz);
+                    if (badBiome) badBiomeCount++;
+                    int score = scan.delta + (badBiome ? BAD_BIOME_PENALTY : 0);
+                    if (score < bestScore)
+                    {
+                        bestScore = score;
+                        bestDelta = scan.delta;
+                        bestPivotX = cx;
+                        bestPivotZ = cz;
+                        bestInGoodBiome = !badBiome;
                     }
                 }
             }
-        }
-        PepelEdema.LOGGER.info("[village] heightmap построен: {} колонок", heightMap.size());
-
-        // Pass 2: deforestation. Трёхшаговая.
-        //   Шаг А: собираем ВСЕ логи в расширенной зоне (deforest + SURVIVING_LOG_BUFFER).
-        //          Сканируем колонку сверху вниз, пропуская AIR/LOGS/LEAVES, останавливаемся на
-        //          первом солидном ground-блоке (dirt/grass/stone/etc.) — так ловим даже очень
-        //          высокие деревья (skyroot, dark_oak), у которых нижние логи раньше уезжали ниже
-        //          scanTo = top-25 и оставались огрызками.
-        //   Шаг Б: классификация: лог в bbox+DEFOREST_BUFFER → к удалению, остальные → выжившие.
-        //   Шаг В: BFS через face-adjacent листья от логов-к-удалению. ОСТАНАВЛИВАЕМСЯ на листьях
-        //          прилегающих к выжившему логу — иначе крона соседнего нетронутого дерева
-        //          сшелушивается и остаётся голый ствол. Глубина MAX_LEAF_BFS_DEPTH=6 = vanilla.
-        final int SURVIVING_LOG_BUFFER = 12;
-        Set<BlockPos> allLogs = new HashSet<>();
-        int minBuild = level.getMinBuildHeight();
-        for (BuildingPlan p : plans)
-        {
-            int xMin = p.originX - DEFOREST_BUFFER - SURVIVING_LOG_BUFFER;
-            int xMax = p.maxX    + DEFOREST_BUFFER + SURVIVING_LOG_BUFFER;
-            int zMin = p.originZ - DEFOREST_BUFFER - SURVIVING_LOG_BUFFER;
-            int zMax = p.maxZ    + DEFOREST_BUFFER + SURVIVING_LOG_BUFFER;
-            for (int x = xMin; x <= xMax; x++)
+            PepelEdema.LOGGER.info("[village] FLAT_SEARCH: target=({},?,{}), кандидатов={} (близко-к-рыбаку={}, вода-reject={}, плохой-биом={}), pivot=({},?,{}) (сдвиг dx={},dz={}), bbox-delta={}, biome-ok={}",
+                    targetX, targetZ, candidatesTotal, rejectedNear, rejectedWater, badBiomeCount,
+                    bestPivotX, bestPivotZ,
+                    bestPivotX - targetX, bestPivotZ - targetZ, bestDelta, bestInGoodBiome);
+            if (bestScore == Integer.MAX_VALUE)
             {
-                for (int z = zMin; z <= zMax; z++)
-                {
-                    int top = level.getHeight(Heightmap.Types.MOTION_BLOCKING, x, z);
-                    int scanFrom = Math.min(top + 1, level.getMaxBuildHeight() - 1);
-                    for (int y = scanFrom; y >= minBuild; y--)
-                    {
-                        BlockPos pos = new BlockPos(x, y, z);
-                        BlockState bs = level.getBlockState(pos);
-                        if (bs.is(BlockTags.LOGS))
-                        {
-                            allLogs.add(pos);
-                        }
-                        else if (bs.is(BlockTags.LEAVES) || bs.isAir())
-                        {
-                            // продолжаем вниз сквозь крону/воздух
-                        }
-                        else
-                        {
-                            // первый солидный ground-блок — кончили скан этой колонки
-                            break;
-                        }
-                    }
-                }
+                PepelEdema.LOGGER.warn("[village] все кандидаты на воде, деревня не поставлена.");
+                phase = -1;
+                return;
             }
+            if (!bestInGoodBiome)
+            {
+                PepelEdema.LOGGER.warn("[village] хороший биом не найден в радиусе {} — деревня сядет в плохом ({} кандидатов из {} были в blacklist).",
+                        FLAT_SEARCH_RADIUS, badBiomeCount, candidatesTotal);
+            }
+            logTiming("FLAT_SEARCH (" + candidatesTotal + " кандидатов)");
+            phase = 4;
         }
 
-        // Шаг Б: классификация
-        Set<BlockPos> logsToRemove = new HashSet<>();
-        Set<BlockPos> survivingLogs = new HashSet<>();
-        for (BlockPos pos : allLogs)
+        // ===== Phase 4: force-load #2 + preparePlan =====
+        private void preparePlans()
         {
-            boolean inRemoveZone = false;
+            forceLoadChunks(level, bestPivotX, bestPivotZ, 160);
+            plans = new ArrayList<>();
+            for (Building b : buildings)
+            {
+                BuildingPlan p = preparePlan(level, b, bestPivotX, bestPivotZ);
+                if (p != null) plans.add(p);
+            }
+            logTiming("force-load #2 + preparePlan x" + buildings.size());
+            phase = 5;
+        }
+
+        // ===== Phase 5: Pass 1 — heightmap =====
+        private void pass1()
+        {
+            heightMap = new HashMap<>();
             for (BuildingPlan p : plans)
             {
-                if (pos.getX() >= p.originX - DEFOREST_BUFFER && pos.getX() <= p.maxX + DEFOREST_BUFFER &&
-                    pos.getZ() >= p.originZ - DEFOREST_BUFFER && pos.getZ() <= p.maxZ + DEFOREST_BUFFER)
+                for (int x = p.originX; x <= p.maxX; x++)
+                    for (int z = p.originZ; z <= p.maxZ; z++)
+                        heightMap.put(key(x, z), p.targetY);
+            }
+            for (BuildingPlan p : plans)
+            {
+                for (int x = p.originX - EDGE_FEATHER; x <= p.maxX + EDGE_FEATHER; x++)
                 {
-                    inRemoveZone = true;
-                    break;
+                    for (int z = p.originZ - EDGE_FEATHER; z <= p.maxZ + EDGE_FEATHER; z++)
+                    {
+                        long k = key(x, z);
+                        if (heightMap.containsKey(k)) continue;
+                        int distEdge = 0;
+                        if (x < p.originX) distEdge = Math.max(distEdge, p.originX - x);
+                        if (x > p.maxX)    distEdge = Math.max(distEdge, x - p.maxX);
+                        if (z < p.originZ) distEdge = Math.max(distEdge, p.originZ - z);
+                        if (z > p.maxZ)    distEdge = Math.max(distEdge, z - p.maxZ);
+                        if (distEdge == 0 || distEdge > EDGE_FEATHER) continue;
+                        int natural = medianGroundY(level, x, z, 1);
+                        float weight = 1.0f - (float) distEdge / (EDGE_FEATHER + 1);
+                        int columnY = Math.round(p.targetY * weight + natural * (1.0f - weight));
+                        Integer prev = heightMap.get(k);
+                        if (prev == null || columnY > prev) heightMap.put(k, columnY);
+                    }
                 }
             }
-            if (inRemoveZone) logsToRemove.add(pos);
-            else              survivingLogs.add(pos);
+            PepelEdema.LOGGER.info("[village] heightmap построен: {} колонок", heightMap.size());
+            logTiming("Pass 1 heightmap");
+            phase = 6;
         }
 
-        // Шаг В: BFS листьев с защитой выживших логов
-        Queue<BlockPos> bfsQueue = new ArrayDeque<>();
-        Map<BlockPos, Integer> leafDepth = new HashMap<>();
-        for (BlockPos log : logsToRemove)
+        // ===== Phase 6: Pass 2 — deforest =====
+        private void pass2()
         {
-            for (Direction dir : Direction.values())
+            final int SURVIVING_LOG_BUFFER = 12;
+            Set<BlockPos> allLogs = new HashSet<>();
+            int minBuild = level.getMinBuildHeight();
+            for (BuildingPlan p : plans)
             {
-                BlockPos n = log.relative(dir);
-                if (logsToRemove.contains(n) || survivingLogs.contains(n) || leafDepth.containsKey(n)) continue;
-                if (level.getBlockState(n).is(BlockTags.LEAVES) && !isLeafProtected(n, survivingLogs))
+                int xMin = p.originX - DEFOREST_BUFFER - SURVIVING_LOG_BUFFER;
+                int xMax = p.maxX    + DEFOREST_BUFFER + SURVIVING_LOG_BUFFER;
+                int zMin = p.originZ - DEFOREST_BUFFER - SURVIVING_LOG_BUFFER;
+                int zMax = p.maxZ    + DEFOREST_BUFFER + SURVIVING_LOG_BUFFER;
+                for (int x = xMin; x <= xMax; x++)
                 {
-                    leafDepth.put(n, 1);
-                    bfsQueue.add(n);
+                    for (int z = zMin; z <= zMax; z++)
+                    {
+                        int top = level.getHeight(Heightmap.Types.MOTION_BLOCKING, x, z);
+                        int scanFrom = Math.min(top + 1, level.getMaxBuildHeight() - 1);
+                        for (int y = scanFrom; y >= minBuild; y--)
+                        {
+                            BlockPos pos = new BlockPos(x, y, z);
+                            BlockState bs = level.getBlockState(pos);
+                            if (bs.is(BlockTags.LOGS)) allLogs.add(pos);
+                            else if (bs.is(BlockTags.LEAVES) || bs.isAir()) { /* пропускаем */ }
+                            else break;
+                        }
+                    }
                 }
             }
-        }
-        while (!bfsQueue.isEmpty())
-        {
-            BlockPos pos = bfsQueue.poll();
-            int d = leafDepth.get(pos);
-            if (d >= MAX_LEAF_BFS_DEPTH) continue;
-            for (Direction dir : Direction.values())
+            Set<BlockPos> logsToRemove = new HashSet<>();
+            Set<BlockPos> survivingLogs = new HashSet<>();
+            for (BlockPos pos : allLogs)
             {
-                BlockPos n = pos.relative(dir);
-                if (leafDepth.containsKey(n) || logsToRemove.contains(n) || survivingLogs.contains(n)) continue;
-                if (level.getBlockState(n).is(BlockTags.LEAVES) && !isLeafProtected(n, survivingLogs))
+                boolean inRemoveZone = false;
+                for (BuildingPlan p : plans)
                 {
-                    leafDepth.put(n, d + 1);
-                    bfsQueue.add(n);
+                    if (pos.getX() >= p.originX - DEFOREST_BUFFER && pos.getX() <= p.maxX + DEFOREST_BUFFER &&
+                        pos.getZ() >= p.originZ - DEFOREST_BUFFER && pos.getZ() <= p.maxZ + DEFOREST_BUFFER)
+                    { inRemoveZone = true; break; }
+                }
+                if (inRemoveZone) logsToRemove.add(pos); else survivingLogs.add(pos);
+            }
+            Queue<BlockPos> bfsQueue = new ArrayDeque<>();
+            Map<BlockPos, Integer> leafDepth = new HashMap<>();
+            for (BlockPos log : logsToRemove)
+            {
+                for (Direction dir : Direction.values())
+                {
+                    BlockPos n = log.relative(dir);
+                    if (logsToRemove.contains(n) || survivingLogs.contains(n) || leafDepth.containsKey(n)) continue;
+                    if (level.getBlockState(n).is(BlockTags.LEAVES) && !isLeafProtected(n, survivingLogs))
+                    { leafDepth.put(n, 1); bfsQueue.add(n); }
                 }
             }
+            while (!bfsQueue.isEmpty())
+            {
+                BlockPos pos = bfsQueue.poll();
+                int d = leafDepth.get(pos);
+                if (d >= MAX_LEAF_BFS_DEPTH) continue;
+                for (Direction dir : Direction.values())
+                {
+                    BlockPos n = pos.relative(dir);
+                    if (leafDepth.containsKey(n) || logsToRemove.contains(n) || survivingLogs.contains(n)) continue;
+                    if (level.getBlockState(n).is(BlockTags.LEAVES) && !isLeafProtected(n, survivingLogs))
+                    { leafDepth.put(n, d + 1); bfsQueue.add(n); }
+                }
+            }
+            for (BlockPos pos : logsToRemove)       level.setBlock(pos, Blocks.AIR.defaultBlockState(), 2);
+            for (BlockPos pos : leafDepth.keySet()) level.setBlock(pos, Blocks.AIR.defaultBlockState(), 2);
+            PepelEdema.LOGGER.info("[village] deforest: всего логов={}, к-удалению={}, выжило={}, листьев удалено={}",
+                    allLogs.size(), logsToRemove.size(), survivingLogs.size(), leafDepth.size());
+            logTiming("Pass 2 deforest");
+            phase = 7;
         }
 
-        for (BlockPos pos : logsToRemove)       level.setBlock(pos, Blocks.AIR.defaultBlockState(), 2);
-        for (BlockPos pos : leafDepth.keySet()) level.setBlock(pos, Blocks.AIR.defaultBlockState(), 2);
-        PepelEdema.LOGGER.info("[village] deforest: всего логов={}, к-удалению={}, выжило={}, листьев удалено={} (BFS, max depth={})",
-                allLogs.size(), logsToRemove.size(), survivingLogs.size(), leafDepth.size(), MAX_LEAF_BFS_DEPTH);
-
-        // Pass 3: применяем heightMap — выравнивание земли.
-        long filled = 0, removed = 0;
-        for (Map.Entry<Long, Integer> entry : heightMap.entrySet())
+        // ===== Phase 7: Pass 3 — выравнивание земли =====
+        private void pass3()
         {
-            long k = entry.getKey();
-            int x = (int) (k >> 32);
-            int z = (int) (k & 0xFFFFFFFFL); // cast → int делает sign-extend автоматически
-            int columnY = entry.getValue();
-            int currentTop = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z);
-
-            if (currentTop < columnY)
+            long filled = 0, removed = 0;
+            for (Map.Entry<Long, Integer> entry : heightMap.entrySet())
             {
-                for (int y = currentTop; y < columnY - 1; y++)
+                long k = entry.getKey();
+                int x = (int) (k >> 32);
+                int z = (int) (k & 0xFFFFFFFFL);
+                int columnY = entry.getValue();
+                int currentTop = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z);
+                if (currentTop < columnY)
                 {
-                    level.setBlock(new BlockPos(x, y, z), Blocks.DIRT.defaultBlockState(), 2);
+                    for (int y = currentTop; y < columnY - 1; y++)
+                    { level.setBlock(new BlockPos(x, y, z), Blocks.DIRT.defaultBlockState(), 2); filled++; }
+                    level.setBlock(new BlockPos(x, columnY - 1, z), Blocks.GRASS_BLOCK.defaultBlockState(), 2);
                     filled++;
                 }
-                level.setBlock(new BlockPos(x, columnY - 1, z), Blocks.GRASS_BLOCK.defaultBlockState(), 2);
-                filled++;
-            }
-            else if (currentTop >= columnY)
-            {
-                for (int y = columnY; y <= currentTop; y++)
+                else if (currentTop >= columnY)
                 {
-                    level.setBlock(new BlockPos(x, y, z), Blocks.AIR.defaultBlockState(), 2);
-                    removed++;
+                    for (int y = columnY; y <= currentTop; y++)
+                    { level.setBlock(new BlockPos(x, y, z), Blocks.AIR.defaultBlockState(), 2); removed++; }
+                    level.setBlock(new BlockPos(x, columnY - 1, z), Blocks.GRASS_BLOCK.defaultBlockState(), 2);
                 }
-                level.setBlock(new BlockPos(x, columnY - 1, z), Blocks.GRASS_BLOCK.defaultBlockState(), 2);
-            }
-
-            for (int y = columnY - FILL_DEPTH; y < columnY - 1; y++)
-            {
-                BlockPos pos = new BlockPos(x, y, z);
-                if (level.getBlockState(pos).isAir())
+                for (int y = columnY - FILL_DEPTH; y < columnY - 1; y++)
                 {
-                    level.setBlock(pos, Blocks.DIRT.defaultBlockState(), 2);
-                    filled++;
+                    BlockPos pos = new BlockPos(x, y, z);
+                    if (level.getBlockState(pos).isAir())
+                    { level.setBlock(pos, Blocks.DIRT.defaultBlockState(), 2); filled++; }
                 }
             }
+            PepelEdema.LOGGER.info("[village] выравнивание: filled={}, removed={}", filled, removed);
+            logTiming("Pass 3 align");
+            phase = 8;
         }
-        PepelEdema.LOGGER.info("[village] выравнивание: filled={}, removed={}", filled, removed);
 
-        // Pass 4: ставим все template'ы — теперь они кладутся поверх плоской земли,
-        // bbox-зоны не пересекаются (manifest гарантирует), template друг друга не затирают.
-        // templatePos.y = villageTargetY - 1: template'ы authored в worldedit с собственным
-        // слоем земли в Y=0 (well/q_board: dirt; herb_house/farm: grass+stone). Чтобы этот
-        // слой совпал с feather-grass-уровнем (columnY-1) а здание начиналось ровно на нём,
-        // опускаем templatePos на 1.
-        // BlockIgnoreProcessor.AIR: AIR-блоки в template (верх bbox, окна, дверные проёмы)
-        // не пишутся в мир — иначе срезают листву соседних деревьев и оставляют дыры в
-        // воздухе там где было что-то живое.
-        int placed = 0;
-        for (BuildingPlan p : plans)
+        // ===== Phase 8: Pass 4 — placement шаблонов =====
+        private void pass4()
         {
-            BlockPos templatePos = new BlockPos(p.originX, p.targetY - 1, p.originZ);
-            StructurePlaceSettings settings = new StructurePlaceSettings()
-                    .addProcessor(BlockIgnoreProcessor.AIR);
-            boolean ok = p.template.placeInWorld(level, templatePos, templatePos, settings, level.getRandom(), 2);
-            if (ok)
+            placed = 0;
+            for (BuildingPlan p : plans)
             {
-                placed++;
-                PepelEdema.LOGGER.info("[village] {} поставлен: pivot=({},{},{}), bbox=[{}..{}, {}..{}], targetY={}",
-                        p.id, p.pivotX, p.targetY, p.pivotZ,
-                        p.originX, p.maxX, p.originZ, p.maxZ, p.targetY);
+                BlockPos templatePos = new BlockPos(p.originX, p.targetY - 1, p.originZ);
+                StructurePlaceSettings settings = new StructurePlaceSettings()
+                        .addProcessor(BlockIgnoreProcessor.AIR);
+                boolean ok = p.template.placeInWorld(level, templatePos, templatePos, settings, level.getRandom(), 2);
+                if (ok)
+                {
+                    placed++;
+                    PepelEdema.LOGGER.info("[village] {} поставлен: pivot=({},{},{}), bbox=[{}..{}, {}..{}], targetY={}",
+                            p.id, p.pivotX, p.targetY, p.pivotZ,
+                            p.originX, p.maxX, p.originZ, p.maxZ, p.targetY);
+                }
+                else
+                {
+                    PepelEdema.LOGGER.error("[village] placeInWorld для {} вернул false", p.id);
+                }
             }
-            else
-            {
-                PepelEdema.LOGGER.error("[village] placeInWorld для {} вернул false", p.id);
-            }
+            logTiming("Pass 4 placement (" + placed + "/" + plans.size() + ")");
+            phase = 9;
         }
 
-        // Pass 5: гравийные дорожки от колодца к каждому зданию. Bresenham line
-        // с brush-радиусом ROAD_RADIUS, поверхность подменяется на gravel.
-        // Внутри bbox любого здания не красим (чтобы не лезть на пол/фундамент).
-        BuildingPlan wellPlan = null;
-        for (BuildingPlan p : plans) if ("well".equals(p.id)) { wellPlan = p; break; }
-        if (wellPlan != null)
+        // ===== Phase 9: Pass 5 (roads) + Pass 6 (NPCs) + finalize =====
+        private void pass5_6_finalize()
         {
-            int painted = 0;
-            for (BuildingPlan target : plans)
+            wellPlan = null;
+            for (BuildingPlan p : plans) if ("well".equals(p.id)) { wellPlan = p; break; }
+            if (wellPlan != null)
             {
-                if (target == wellPlan) continue;
-                painted += drawRoad(level, wellPlan.pivotX, wellPlan.pivotZ,
-                                          target.pivotX, target.pivotZ, plans);
+                int painted = 0;
+                for (BuildingPlan target : plans)
+                {
+                    if (target == wellPlan) continue;
+                    painted += drawRoad(level, wellPlan.pivotX, wellPlan.pivotZ,
+                            target.pivotX, target.pivotZ, plans);
+                }
+                PepelEdema.LOGGER.info("[village] дорожки: {} блоков gravel'я положено", painted);
             }
-            PepelEdema.LOGGER.info("[village] дорожки: {} блоков gravel'я положено", painted);
-        }
 
-        // Pass 6: автоспавн story NPC в зданиях с заданным полем npc в манифесте.
-        // pivotX/pivotZ — центр здания, world Y = p.targetY (templatePos.y = targetY-1, template Y=0 это пол → ходячий уровень = world Y=targetY).
-        // Если центральная клетка занята (стена/кровать/стол), пробуем offset'ы от центра.
-        int npcsExpected = 0;
-        for (BuildingPlan pl : plans) if (pl.npc != null) npcsExpected++;
-        int npcsSpawned = 0;
-        for (BuildingPlan p : plans)
-        {
-            if (p.npc == null) continue;
-            BlockPos spawnPos = findFreeSpawnSpot(level, p);
-            boolean ok = StoryNpcSpawner.spawnAt(level, spawnPos, 180.0f, p.npc);
-            if (ok)
+            int npcsExpected = 0;
+            for (BuildingPlan pl : plans) if (pl.npc != null) npcsExpected++;
+            int npcsSpawned = 0;
+            for (BuildingPlan p : plans)
             {
-                npcsSpawned++;
-                PepelEdema.LOGGER.info("[village] NPC {} заспавнен в {} на {}", p.npc, p.id, spawnPos);
+                if (p.npc == null) continue;
+                BlockPos spawnPos = findFreeSpawnSpot(level, p);
+                boolean ok = StoryNpcSpawner.spawnAt(level, spawnPos, 180.0f, p.npc);
+                if (ok)
+                {
+                    npcsSpawned++;
+                    PepelEdema.LOGGER.info("[village] NPC {} заспавнен в {} на {}", p.npc, p.id, spawnPos);
+                }
+                else
+                {
+                    PepelEdema.LOGGER.error("[village] NPC {} в {} не заспавнился как customnpcs", p.npc, p.id);
+                }
             }
-            else
-            {
-                PepelEdema.LOGGER.error("[village] NPC {} в {} не заспавнился как customnpcs (упал в villager fallback или совсем не создался)", p.npc, p.id);
-            }
-        }
-        PepelEdema.LOGGER.info("[village] story NPC: заспавнено {} из {}", npcsSpawned, npcsExpected);
+            PepelEdema.LOGGER.info("[village] story NPC: заспавнено {} из {}", npcsSpawned, npcsExpected);
 
-        // Финальный pivot для savedData = pivot колодца если есть, иначе bestPivot из FLAT_SEARCH.
-        // Y берём из well.targetY (или среднее по plans если well нет).
-        int finalY = wellPlan != null ? wellPlan.targetY : (plans.isEmpty() ? 64 : plans.get(0).targetY);
-        BlockPos finalPivot = new BlockPos(bestPivotX, finalY, bestPivotZ);
-        state.markSpawned(finalPivot);
-        PepelEdema.LOGGER.info("[village] деревня поставлена. Зданий: {}/{}. Pivot={}",
-                placed, buildings.size(), finalPivot);
+            int finalY = wellPlan != null ? wellPlan.targetY : (plans.isEmpty() ? 64 : plans.get(0).targetY);
+            BlockPos finalPivot = new BlockPos(bestPivotX, finalY, bestPivotZ);
+            savedState.markSpawned(finalPivot);
+            PepelEdema.LOGGER.info("[village] деревня поставлена. Зданий: {}/{}. Pivot={}",
+                    placed, buildings.size(), finalPivot);
+            // Снимаем FORCED-тикеты со всех чанков зоны FLAT_SEARCH — они дальше не нужны
+            // нам, и могут выгружаться обычной системой когда игрок отойдёт.
+            releaseForcedChunks();
+            logTiming("Pass 5+6+finalize");
+            PepelEdema.LOGGER.info("[village] timing: TOTAL = {}ms (async, мир не блокировался)",
+                    System.currentTimeMillis() - tStart);
+            phase = -1; // done
+        }
     }
+
 
     /**
      * Bresenham от (x1,z1) до (x2,z2). На каждой точке кладёт brush радиуса ROAD_RADIUS:
