@@ -83,6 +83,7 @@ public class VillagePlacement
      * FLAT_SEARCH ищет место где этот bbox максимально плоский И не на воде.
      */
     private static final int VILLAGE_BBOX_SIDE = 90;
+    private static final int VILLAGE_ENTER_RADIUS = 96;
 
     /**
      * Расширенная зона для оценки плоскости при FLAT_SEARCH. Шире чем footprint деревни (90)
@@ -218,6 +219,7 @@ public class VillagePlacement
 
         // pass5
         private BuildingPlan wellPlan;
+        private BuildingPlan questBoardPlan;
 
         Task(ServerLevel level, BlockPos islandCenter, BlockPos fishermanPos, VillagePriyutState savedState)
         {
@@ -655,7 +657,9 @@ public class VillagePlacement
         private void pass5_6_finalize()
         {
             wellPlan = null;
+            questBoardPlan = null;
             for (BuildingPlan p : plans) if ("well".equals(p.id)) { wellPlan = p; break; }
+            for (BuildingPlan p : plans) if ("q_board".equals(p.id)) { questBoardPlan = p; break; }
             if (wellPlan != null)
             {
                 int painted = 0;
@@ -690,9 +694,12 @@ public class VillagePlacement
 
             int finalY = wellPlan != null ? wellPlan.targetY : (plans.isEmpty() ? 64 : plans.get(0).targetY);
             BlockPos finalPivot = new BlockPos(bestPivotX, finalY, bestPivotZ);
-            savedState.markSpawned(finalPivot);
-            PepelEdema.LOGGER.info("[village] деревня поставлена. Зданий: {}/{}. Pivot={}",
-                    placed, buildings.size(), finalPivot);
+            BlockPos questBoardPivot = questBoardPlan != null
+                    ? new BlockPos(questBoardPlan.pivotX, questBoardPlan.targetY, questBoardPlan.pivotZ)
+                    : null;
+            savedState.markSpawned(finalPivot, VILLAGE_ENTER_RADIUS, questBoardPivot);
+            PepelEdema.LOGGER.info("[village] деревня поставлена. Зданий: {}/{}. Pivot={}, qBoard={}",
+                    placed, buildings.size(), finalPivot, questBoardPivot);
             // Снимаем FORCED-тикеты со всех чанков зоны FLAT_SEARCH — они дальше не нужны
             // нам, и могут выгружаться обычной системой когда игрок отойдёт.
             releaseForcedChunks();

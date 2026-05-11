@@ -102,9 +102,7 @@ public class StoryNpcSpawner
                 "pepel:textures/entity/npc/marta.png",
                 "pepel_marta",
                 new DialogOption[]{
-                        new DialogOption(0, FishermanDialogs.MARTA_START_ID, "Разговор"),
-                        new DialogOption(1, FishermanDialogs.MARTA_WORK_ID, "Что делать?"),
-                        new DialogOption(2, FishermanDialogs.MARTA_WHO_ID, "Кто ты?")
+                        new DialogOption(0, FishermanDialogs.MARTA_START_ID, "Разговор")
                 });
     }
 

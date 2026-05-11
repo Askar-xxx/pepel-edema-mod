@@ -5,7 +5,7 @@
     "DialogShowWheel": 0b,
     "DialogHideNPC": 0b,
     "DialogDisableEsc": 0b,
-    "DialogCommand": "",
+    "DialogCommand": "pepel_f0_start @p",
     "DialogQuest": -1,
     "ModRev": 18,
     "Options": [

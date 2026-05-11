@@ -1,11 +1,11 @@
 {
     "DialogId": 30,
     "DialogTitle": "Марта",
-    "DialogText": "Ты добрался до Приюта живым. Значит, остров не ошибся. Я Марта, старостиха. У нас мало рук и слишком много дыр в стенах, так что отдыхай недолго.",
+    "DialogText": "Ты добрался до Приюта живым. Значит, остров не ошибся. Я Марта, старостиха. Раз уж дошёл до наших ворот — познакомься с соседями: Лией и Иваром.",
     "DialogShowWheel": 0b,
     "DialogHideNPC": 0b,
     "DialogDisableEsc": 0b,
-    "DialogCommand": "",
+    "DialogCommand": "pepel_m0_start @p",
     "DialogQuest": -1,
     "ModRev": 18,
     "Options": [
