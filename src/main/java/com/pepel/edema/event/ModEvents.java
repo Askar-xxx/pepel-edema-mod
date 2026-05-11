@@ -1,6 +1,8 @@
 package com.pepel.edema.event;
 
 import com.pepel.edema.PepelEdema;
+import com.pepel.edema.api.BookNotifications;
+import com.pepel.edema.capability.BookNotificationsProvider;
 import com.pepel.edema.item.ModItems;
 import com.pepel.edema.worldgen.VillagePriyutState;
 import net.minecraft.core.BlockPos;
@@ -45,6 +47,14 @@ public class ModEvents
     public static final String MARTA_M0_IVAR_TASK_ID = "7100000000000003";
     private static final double QUEST_BOARD_USE_RADIUS_SQ = 4.0 * 4.0;
 
+    /**
+     * Tick игрока (player.tickCount), на котором появляется первая запись Эрена.
+     * Считается с момента когда игрок реально начал тикать в мире (не с login event,
+     * который fires во время loading screen клиента). 100 тиков = 5 секунд после
+     * того как игрок увидит мир.
+     */
+    private static final int AWAKENING_TRIGGER_TICK = 100;
+
     @SubscribeEvent
     public static void onPlayerLogin(PlayerEvent.PlayerLoggedInEvent event)
     {
@@ -57,6 +67,19 @@ public class ModEvents
             player.addItem(new ItemStack(ModItems.BOOK_OF_EREN.get()));
             data.putBoolean(BOOK_GIVEN, true);
         }
+        // Триггер p0_awakening теперь в onPlayerTick по player.tickCount —
+        // login event fires до завершения loading screen, поэтому ставить
+        // delay относительно login = игрок видит уведомление мгновенно после
+        // загрузки чанков. По tickCount задержка отсчитывается от реального
+        // момента когда игрок начал двигаться в мире.
+    }
+
+    private static void sendBookUpdatedSubtitle(ServerPlayer player)
+    {
+        player.connection.send(new ClientboundSetTitlesAnimationPacket(5, 60, 25));
+        player.connection.send(new ClientboundSetTitleTextPacket(Component.literal("")));
+        player.connection.send(new ClientboundSetSubtitleTextPacket(
+                Component.literal("[ Книга Эрена обновилась... ]")));
     }
 
     @SubscribeEvent
@@ -89,6 +112,23 @@ public class ModEvents
         if (player.tickCount % 20 != 0) return;
         if (player.level().dimension() != Level.OVERWORLD) return;
 
+        // p0_awakening — на 100-м тике игрока (5 сек после реального появления
+        // в мире). Если запись уже была получена в прошлой сессии — пропускаем.
+        // Не используем persistent-флаг: при выходе в первые 5 сек игрок просто
+        // получит запись при следующем входе на 100-м тике.
+        if (player.tickCount == AWAKENING_TRIGGER_TICK)
+        {
+            boolean alreadyHas = player.getCapability(BookNotificationsProvider.CAP)
+                    .map(cap -> cap.receivedSnapshot().stream()
+                            .anyMatch(r -> "p0_awakening".equals(r.id())))
+                    .orElse(false);
+            if (!alreadyHas)
+            {
+                BookNotifications.notify(player, "p0_awakening");
+                sendBookUpdatedSubtitle(player);
+            }
+        }
+
         syncMartaNoteScore(player);
 
         CompoundTag data = player.getPersistentData();
@@ -106,6 +146,11 @@ public class ModEvents
         {
             data.putBoolean(PRIYUT_TITLE_SHOWN, true);
             playPriyutTitle(level, pivot, player);
+            // Один триггер — два эффекта: RPG-надпись + запись в Книге Эрена.
+            // Свой subtitle не шлём — он бы перебил "Здесь ещё держатся люди"
+            // от playPriyutTitle. Тост от BookNotifyPacket появляется в углу,
+            // его достаточно для индикации "обновилась книга".
+            BookNotifications.notify(player, "p1_first_people");
         }
 
         if (data.getBoolean(FISHERMAN_F0_STARTED) && !data.getBoolean(FISHERMAN_F0_COMPLETED))

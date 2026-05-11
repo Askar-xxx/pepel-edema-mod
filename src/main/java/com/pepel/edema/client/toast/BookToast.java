@@ -19,11 +19,13 @@ public class BookToast implements Toast
 
     private final ItemStack icon;
     private final Importance importance;
+    private final String entryId;
 
-    public BookToast(Importance importance)
+    public BookToast(String entryId, Importance importance)
     {
         this.icon = new ItemStack(ModItems.BOOK_OF_EREN.get());
         this.importance = importance;
+        this.entryId = entryId;
     }
 
     @Override
@@ -32,7 +34,17 @@ public class BookToast implements Toast
         g.blit(TEXTURE, 0, 0, 0, 32, this.width(), this.height());
 
         Component title = Component.translatable("toast.pepel.book.title");
-        Component subtitle = Component.translatable("toast.pepel.book.subtitle");
+        // Подзаголовок — название конкретной записи, если она есть в локализации;
+        // иначе общий "Появилась новая запись" (back-compat для команды /pepel book notify
+        // с произвольным entryId, не зарегистрированным в BookEntries).
+        String titleKey = "pepel.book.entry." + entryId + ".title";
+        Component subtitle = Component.translatable(titleKey);
+        // Эвристика: если перевод не нашёлся, translatable вернёт ключ как текст.
+        // Тогда показываем общий fallback.
+        if (subtitle.getString().equals(titleKey))
+        {
+            subtitle = Component.translatable("toast.pepel.book.subtitle");
+        }
 
         g.drawString(toasts.getMinecraft().font, title, 30, 7, COLOR_TITLE, false);
         g.drawString(toasts.getMinecraft().font, subtitle, 30, 18, COLOR_SUBTITLE, false);

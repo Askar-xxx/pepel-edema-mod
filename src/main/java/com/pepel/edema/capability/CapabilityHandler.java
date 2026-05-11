@@ -47,7 +47,7 @@ public class CapabilityHandler
         if (!(event.getEntity() instanceof ServerPlayer player)) return;
         player.getCapability(BookNotificationsProvider.CAP).ifPresent(cap -> {
             if (!cap.isEmpty())
-                PepelNetwork.sendTo(new BookSyncPacket(cap.snapshot()), player);
+                PepelNetwork.sendTo(new BookSyncPacket(cap.snapshot(), cap.receivedSnapshot()), player);
         });
     }
 }

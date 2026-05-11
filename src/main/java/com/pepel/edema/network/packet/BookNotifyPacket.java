@@ -12,26 +12,36 @@ import net.minecraftforge.network.NetworkEvent;
 
 import java.util.function.Supplier;
 
+/**
+ * Server → client. Уведомление о новой записи в Книге Эрена.
+ * Тост, звук и добавление в локальный received-список с timestamp.
+ */
 public class BookNotifyPacket
 {
     private final String entryId;
     private final Importance importance;
+    private final long timestamp;
 
-    public BookNotifyPacket(String entryId, Importance importance)
+    public BookNotifyPacket(String entryId, Importance importance, long timestamp)
     {
         this.entryId = entryId;
         this.importance = importance;
+        this.timestamp = timestamp;
     }
 
     public static void encode(BookNotifyPacket pkt, FriendlyByteBuf buf)
     {
         buf.writeUtf(pkt.entryId);
         buf.writeEnum(pkt.importance);
+        buf.writeLong(pkt.timestamp);
     }
 
     public static BookNotifyPacket decode(FriendlyByteBuf buf)
     {
-        return new BookNotifyPacket(buf.readUtf(), buf.readEnum(Importance.class));
+        return new BookNotifyPacket(
+                buf.readUtf(),
+                buf.readEnum(Importance.class),
+                buf.readLong());
     }
 
     public static void handle(BookNotifyPacket pkt, Supplier<NetworkEvent.Context> ctxSup)
@@ -39,8 +49,8 @@ public class BookNotifyPacket
         NetworkEvent.Context ctx = ctxSup.get();
         ctx.enqueueWork(() ->
                 DistExecutor.unsafeRunWhenOn(Dist.CLIENT, () -> () -> {
-                    ClientBookState.onNotify(pkt.entryId, pkt.importance);
-                    Minecraft.getInstance().getToasts().addToast(new BookToast(pkt.importance));
+                    ClientBookState.onNotify(pkt.entryId, pkt.importance, pkt.timestamp);
+                    Minecraft.getInstance().getToasts().addToast(new BookToast(pkt.entryId, pkt.importance));
                     if (Minecraft.getInstance().player != null)
                     {
                         Minecraft.getInstance().player.playSound(
