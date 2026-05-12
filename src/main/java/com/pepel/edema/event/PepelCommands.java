@@ -1,12 +1,16 @@
 package com.pepel.edema.event;
 
 import com.pepel.edema.PepelEdema;
+import com.pepel.edema.worldgen.EastRuinPlacement;
+import com.mojang.brigadier.context.CommandContext;
+import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.arguments.EntityArgument;
 import net.minecraft.commands.Commands;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
@@ -89,6 +93,47 @@ public class PepelCommands
                                                 EntityArgument.getPlayer(ctx, "player"),
                                                 "ivar"))))
         );
+
+        event.getDispatcher().register(
+                Commands.literal("pepel_spawn_east_ruin")
+                        .requires(src -> src.hasPermission(2))
+                        .executes(ctx -> spawnEastRuinForCommandSource(ctx))
+                        .then(Commands.argument("player", EntityArgument.player())
+                                .executes(ctx -> EastRuinPlacement.placeAfterM0(EntityArgument.getPlayer(ctx, "player")) ? 1 : 0))
+        );
+    }
+
+    private static int spawnEastRuinForCommandSource(CommandContext<CommandSourceStack> ctx)
+    {
+        ServerPlayer player = ctx.getSource().getPlayer();
+        if (player == null)
+        {
+            player = nearestPlayer(ctx.getSource());
+        }
+        if (player == null)
+        {
+            PepelEdema.LOGGER.warn("[east-ruin] pepel_spawn_east_ruin called without a player source and no nearby player was found");
+            return 0;
+        }
+        return EastRuinPlacement.placeAfterM0(player) ? 1 : 0;
+    }
+
+    private static ServerPlayer nearestPlayer(CommandSourceStack source)
+    {
+        ServerLevel level = source.getLevel();
+        Vec3 pos = source.getPosition();
+        ServerPlayer nearest = null;
+        double nearestDist = Double.MAX_VALUE;
+        for (ServerPlayer player : level.players())
+        {
+            double dist = player.distanceToSqr(pos);
+            if (dist < nearestDist)
+            {
+                nearest = player;
+                nearestDist = dist;
+            }
+        }
+        return nearest;
     }
 
     private static int startFishermanF0(ServerPlayer player)
@@ -147,6 +192,11 @@ public class PepelCommands
 
         if (data.getBoolean(flag))
         {
+            if (data.getBoolean(ModEvents.MARTA_M0_LIA_COMPLETED)
+                    && data.getBoolean(ModEvents.MARTA_M0_IVAR_COMPLETED))
+            {
+                ModEvents.setScore(player, ModEvents.MARTA_M0_DONE_SCOREBOARD, 1);
+            }
             return 1;
         }
 
@@ -158,6 +208,11 @@ public class PepelCommands
             String npcName = "lia".equals(npcId) ? "Лией" : "Иваром";
             player.displayClientMessage(Component.literal("§eЗадача обновлена: поговорить с " + npcName), false);
             PepelEdema.LOGGER.info("[quests] M0 {} task completed for {}", npcId, player.getGameProfile().getName());
+            if (data.getBoolean(ModEvents.MARTA_M0_LIA_COMPLETED)
+                    && data.getBoolean(ModEvents.MARTA_M0_IVAR_COMPLETED))
+            {
+                ModEvents.setScore(player, ModEvents.MARTA_M0_DONE_SCOREBOARD, 1);
+            }
         }
         else
         {

@@ -34,6 +34,10 @@ public class FishermanDialogs
     public static final int IVAR_BYE_ID   = 13;
     public static final int IVAR_WHO_END_ID   = 14;
     public static final int IVAR_RUINS_END_ID = 15;
+    public static final int IVAR_EAST_RUIN_ID = 16;
+    public static final int IVAR_AFTER_GUARDIAN_ID = 17;
+    public static final int IVAR_AFTER_M0_START_ID = 18;
+    public static final int IVAR_AFTER_RUIN_START_ID = 19;
 
     /** ID диалогов Лии. */
     public static final int LIA_START_ID = 20;
@@ -53,7 +57,7 @@ public class FishermanDialogs
 
     private static final int[] DIALOG_IDS = {
             4, 5, 6, 7, 8, 9,
-            10, 11, 12, 13, 14, 15,
+            10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
             20, 21, 22, 23, 24, 25,
             30, 31, 32, 33, 34, 35
     };

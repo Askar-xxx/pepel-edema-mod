@@ -25,6 +25,9 @@ public class StoryNpcSpawner
     private static final String HOME_X = "pepel_home_x";
     private static final String HOME_Y = "pepel_home_y";
     private static final String HOME_Z = "pepel_home_z";
+    private static final String NPC_OPTIONS_REV = "pepel_story_npc_options_rev";
+    private static final String IVAR_START_DIALOG = "pepel_ivar_start_dialog";
+    private static final int CURRENT_NPC_OPTIONS_REV = 2;
 
     public static void spawnIvarNear(ServerPlayer player)
     {
@@ -76,9 +79,7 @@ public class StoryNpcSpawner
                 "pepel:textures/entity/npc/ivar.png",
                 "pepel_ivar",
                 new DialogOption[]{
-                        new DialogOption(0, FishermanDialogs.IVAR_START_ID, "Разговор"),
-                        new DialogOption(1, FishermanDialogs.IVAR_RUINS_ID, "О руинах"),
-                        new DialogOption(2, FishermanDialogs.IVAR_WHO_ID, "Кто ты?")
+                        new DialogOption(0, FishermanDialogs.IVAR_START_ID, "Разговор")
                 });
     }
 
@@ -126,7 +127,7 @@ public class StoryNpcSpawner
             });
             if (entity != null)
             {
-                markHome(entity, pos, npc);
+                markStoryNpc(entity, pos, npc);
                 level.addFreshEntity(entity);
                 if (player != null)
                 {
@@ -144,6 +145,7 @@ public class StoryNpcSpawner
         villager.setCustomNameVisible(true);
         villager.setPersistenceRequired();
         villager.addTag(npc.tag());
+        markStoryNpc(villager, pos, npc);
         level.addFreshEntity(villager);
         if (player != null)
         {
@@ -152,10 +154,69 @@ public class StoryNpcSpawner
         return false;
     }
 
-    private static void markHome(Entity entity, BlockPos pos, StoryNpc npc)
+    public static void refreshStoryNpcOptions(Entity entity)
     {
-        if (!"pepel_ivar".equals(npc.tag())) return;
+        StoryNpc npc = null;
+        if (entity.getTags().contains("pepel_ivar"))
+        {
+            npc = ivar();
+        }
+        else if (entity.getTags().contains("pepel_lia"))
+        {
+            npc = lia();
+        }
+        else if (entity.getTags().contains("pepel_marta"))
+        {
+            npc = marta();
+        }
+        if (npc == null) return;
+
         CompoundTag data = entity.getPersistentData();
+        if (data.getInt(NPC_OPTIONS_REV) >= CURRENT_NPC_OPTIONS_REV) return;
+
+        CompoundTag tag = new CompoundTag();
+        entity.saveWithoutId(tag);
+        tag.put("NPCDialogOptions", buildDialogOptions(npc));
+        tag.putString("Name", npc.name());
+        tag.putString("Texture", npc.texture());
+        tag.putInt("ModRev", 18);
+        entity.load(tag);
+        data = entity.getPersistentData();
+        data.putInt(NPC_OPTIONS_REV, CURRENT_NPC_OPTIONS_REV);
+        PepelEdema.LOGGER.info("[story-npc] refreshed dialog options for {}", npc.name());
+    }
+
+    public static void refreshIvarDialogPhase(ServerLevel level, int startDialogId)
+    {
+        for (Entity entity : level.getAllEntities())
+        {
+            if (!entity.getTags().contains("pepel_ivar")) continue;
+
+            CompoundTag data = entity.getPersistentData();
+            if (data.getInt(IVAR_START_DIALOG) == startDialogId) continue;
+
+            CompoundTag tag = new CompoundTag();
+            entity.saveWithoutId(tag);
+            tag.put("NPCDialogOptions", buildDialogOptions(new StoryNpc(
+                    "Ивар",
+                    "pepel:textures/entity/npc/ivar.png",
+                    "pepel_ivar",
+                    new DialogOption[]{new DialogOption(0, startDialogId, "Разговор")}
+            )));
+            entity.load(tag);
+
+            data = entity.getPersistentData();
+            data.putInt(IVAR_START_DIALOG, startDialogId);
+            data.putInt(NPC_OPTIONS_REV, CURRENT_NPC_OPTIONS_REV);
+            PepelEdema.LOGGER.info("[story-npc] Ivar start dialog switched to {}", startDialogId);
+        }
+    }
+
+    private static void markStoryNpc(Entity entity, BlockPos pos, StoryNpc npc)
+    {
+        CompoundTag data = entity.getPersistentData();
+        data.putInt(NPC_OPTIONS_REV, CURRENT_NPC_OPTIONS_REV);
+        if (!"pepel_ivar".equals(npc.tag())) return;
         data.putBoolean(HOMEBOUND, true);
         data.putInt(HOME_X, pos.getX());
         data.putInt(HOME_Y, pos.getY());
@@ -218,18 +279,23 @@ public class StoryNpcSpawner
         tag.putString("ScriptLanguage", "ECMAScript");
         tag.putInt("ModRev", 18);
 
-        ListTag opts = new ListTag();
-        for (DialogOption option : npc.options())
-        {
-            opts.add(makeDialogOption(option.slot(), option.dialogId(), option.title()));
-        }
-        tag.put("NPCDialogOptions", opts);
+        tag.put("NPCDialogOptions", buildDialogOptions(npc));
 
         CompoundTag emptyLines = new CompoundTag();
         emptyLines.put("Lines", new ListTag());
         tag.put("NpcInteractLines", emptyLines);
 
         return tag;
+    }
+
+    private static ListTag buildDialogOptions(StoryNpc npc)
+    {
+        ListTag opts = new ListTag();
+        for (DialogOption option : npc.options())
+        {
+            opts.add(makeDialogOption(option.slot(), option.dialogId(), option.title()));
+        }
+        return opts;
     }
 
     private static CompoundTag makeDialogOption(int slot, int dialogId, String title)

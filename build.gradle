@@ -244,3 +244,16 @@ tasks.register('convertVillageSchems', Exec) {
     commandLine 'cmd', '/c', 'echo', 'village convert done'
 }
 tasks.named('processResources').configure { dependsOn 'convertVillageSchems' }
+
+// Конвертация отдельных сюжетных руин schem-src/*.schem -> data/pepel/structures/*.nbt.
+// Используем village-mode, чтобы сохранить материалы руины как есть.
+tasks.register('convertRuinSchems', Exec) {
+    def script = file('schem-src/schem_to_nbt.py')
+    def src = file('schem-src/castle.schem')
+    def dst = file('src/main/resources/data/pepel/structures/castle.nbt')
+    inputs.file script
+    inputs.file src
+    outputs.file dst
+    commandLine 'python', script.absolutePath, '--village-mode', src.absolutePath, dst.absolutePath
+}
+tasks.named('processResources').configure { dependsOn 'convertRuinSchems' }
